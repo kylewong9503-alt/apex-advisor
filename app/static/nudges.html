@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Apex Advisor — 情境提醒</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --text: #e7edf4;
+      --muted: #8b9cb3;
+      --border: #2d3a4d;
+      --accent: #2e7dc5;
+      --warn: #d97706;
+      --warn-bg: rgba(217, 119, 6, 0.12);
+      --radius: 10px;
+      --font: "Segoe UI", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.5; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 1.25rem; }
+    h1 { font-size: 1.2rem; margin: 0 0 0.5rem; }
+    .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 1rem; }
+    .auth-panel {
+      background: #243044;
+      border-radius: var(--radius);
+      padding: 1rem;
+      border: 1px solid var(--border);
+      max-width: 400px;
+    }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
+    input, button { font: inherit; border-radius: 8px; border: 1px solid var(--border); padding: 0.5rem; width: 100%; }
+    input { background: var(--bg); color: var(--text); }
+    button { cursor: pointer; background: var(--accent); color: #fff; font-weight: 600; margin-top: 0.5rem; width: auto; }
+    button.secondary { background: var(--surface); color: var(--text); }
+    button.ghost { background: transparent; border-color: var(--border); color: var(--muted); font-size: 0.8rem; padding: 0.25rem 0.5rem; margin-top: 0; }
+    .banner {
+      border-radius: var(--radius);
+      padding: 0.85rem 1rem;
+      margin-bottom: 0.75rem;
+      border: 1px solid var(--border);
+      display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.75rem;
+    }
+    .banner.warning { background: var(--warn-bg); border-color: rgba(217, 119, 6, 0.4); }
+    .banner.info { background: rgba(46, 125, 197, 0.1); border-color: rgba(46, 125, 197, 0.35); }
+    .banner h3 { margin: 0 0 0.35rem; font-size: 0.95rem; }
+    .banner p { margin: 0; font-size: 0.88rem; color: var(--muted); }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem;
+      margin-bottom: 0.75rem;
+    }
+    .card h3 { margin: 0 0 0.35rem; font-size: 0.95rem; }
+    .card p { margin: 0; font-size: 0.88rem; color: var(--muted); }
+    .meta { font-size: 0.75rem; color: var(--muted); margin-top: 0.5rem; }
+    .hidden { display: none !important; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>情境提醒</h1>
+    <p class="sub">非打扰式横幅与卡片 · 数据来自档案与评审模式（<code>/api/v1/nudges</code>）</p>
+
+    <div id="authBox" class="auth-panel">
+      <label>邮箱</label>
+      <input id="email" type="email" />
+      <label>密码</label>
+      <input id="password" type="password" />
+      <button type="button" id="btnLogin">登录</button>
+    </div>
+
+    <div id="app" class="hidden">
+      <p class="meta"><button type="button" class="secondary" id="btnRefresh">刷新</button></p>
+      <div id="banners"></div>
+      <h2 style="font-size:1rem;color:var(--muted);margin:1rem 0 0.5rem">卡片</h2>
+      <div id="cards"></div>
+    </div>
+  </div>
+  <script>
+    const API = "/api/v1";
+    let token = localStorage.getItem("aa_token");
+
+    function authHeaders() {
+      return { "Authorization": "Bearer " + token, "Content-Type": "application/json" };
+    }
+
+    function severityClass(s) {
+      if (s === "warning") return "warning";
+      return "info";
+    }
+
+    async function load() {
+      const r = await fetch(API + "/nudges", { headers: authHeaders() });
+      if (!r.ok) return;
+      const d = await r.json();
+      const bEl = document.getElementById("banners");
+      const cEl = document.getElementById("cards");
+      bEl.innerHTML = "";
+      cEl.innerHTML = "";
+      (d.banners || []).forEach(b => {
+        const div = document.createElement("div");
+        div.className = "banner " + severityClass(b.severity);
+        div.innerHTML = "<div><h3>" + escapeHtml(b.title) + "</h3><p>" + escapeHtml(b.body) + "</p>" +
+          (b.action_href ? "<p><a href=\"" + b.action_href + "\">" + escapeHtml(b.action_label || "打开") + "</a></p>" : "") +
+          "</div><button type=\"button\" class=\"ghost\" data-dismiss=\"" + escapeHtml(b.id) + "\">不再显示</button>";
+        bEl.appendChild(div);
+      });
+      (d.cards || []).forEach(c => {
+        const div = document.createElement("div");
+        div.className = "card";
+        div.innerHTML = "<h3>" + escapeHtml(c.title) + "</h3><p>" + escapeHtml(c.body) + "</p>" +
+          (c.action_href ? "<p class=\"meta\"><a href=\"" + c.action_href + "\">" + escapeHtml(c.action_label || "打开") + "</a></p>" : "") +
+          "<button type=\"button\" class=\"ghost\" data-dismiss=\"" + escapeHtml(c.id) + "\">不再显示</button>";
+        cEl.appendChild(div);
+      });
+      bEl.querySelectorAll("[data-dismiss]").forEach(btn => {
+        btn.onclick = () => dismiss(btn.dataset.dismiss);
+      });
+      cEl.querySelectorAll("[data-dismiss]").forEach(btn => {
+        btn.onclick = () => dismiss(btn.dataset.dismiss);
+      });
+    }
+
+    function escapeHtml(s) {
+      const t = document.createElement("textarea");
+      t.textContent = s;
+      return t.innerHTML;
+    }
+
+    async function dismiss(key) {
+      await fetch(API + "/nudges/dismiss", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ nudge_key: key }),
+      });
+      load();
+    }
+
+    document.getElementById("btnLogin").onclick = async () => {
+      const r = await fetch(API + "/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: document.getElementById("email").value.trim(),
+          password: document.getElementById("password").value,
+        }),
+      });
+      if (!r.ok) { alert("登录失败"); return; }
+      token = (await r.json()).access_token;
+      localStorage.setItem("aa_token", token);
+      document.getElementById("authBox").classList.add("hidden");
+      document.getElementById("app").classList.remove("hidden");
+      load();
+    };
+
+    document.getElementById("btnRefresh").onclick = () => load();
+
+    if (token) {
+      document.getElementById("authBox").classList.add("hidden");
+      document.getElementById("app").classList.remove("hidden");
+      load();
+    }
+  </script>
+</body>
+</html>
