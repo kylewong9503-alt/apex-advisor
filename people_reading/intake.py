@@ -79,7 +79,10 @@ class Intake:
         return "、".join(sorted({n for n in self.aliases})) or "（暂无）"
 
     # —— 录入 ——
-    def handle(self, cid: str, text: str, *, hours_since_event: float = 0) -> Reply:
+    def handle(self, cid: str, text: str, *, hours_since_event: float = 0, prompt_kind: Optional[str] = None,
+               interaction_id: Optional[str] = None) -> Reply:
+        """prompt_kind：None | "settlement_reminder" | "judgment_support_question"（见 2.5）。
+        interaction_id：把这条消息产生的草稿挂到指定互动（结算时挂到刚结束的那场会）。"""
         mid = self.store.add_message(cid, "user", text, now=self.clock())  # 先保存原话，任何失败都不丢
         pending = self.store.get_pending(cid)
         prompt = f"已知人物：{self._known()}（“我”是用户本人）\n"
@@ -92,8 +95,8 @@ class Intake:
             self.store.add_message(cid, "assistant", "模型暂时无法解析这条记录，原话已加密保存。可以手动填写。",
                                    "fallback", now=self.clock())
             return Reply("原话已保存 · 模型未能解析，请手动填写", fallback=True, message_id=mid)
-        mode, prompted = classify_source_mode(hours_since_event, prompted_by_model=False)
-        iid = pending["interaction_id"] if pending else None
+        mode, prompted = classify_source_mode(hours_since_event, prompted_by_model=False, prompt_kind=prompt_kind)
+        iid = interaction_id or (pending["interaction_id"] if pending else None)
         draft_ids, dropped, ask = [], 0, None
         for x in data["drafts"]:
             span = find_span(text, x["source_quote"])
@@ -113,7 +116,8 @@ class Intake:
             proposed = {"kind": x["kind"], "reporter_name": x["reporter"], "reporter_id": rep[1],
                         "subject_name": x["subject"], "subject_id": sub[1], "content": x["content"],
                         "is_interpretation": x["is_interpretation"], "behavior_key": x.get("behavior_key"),
-                        "occurred": x.get("occurred"), "interaction_id": iid, "source_mode": mode}
+                        "occurred": x.get("occurred"), "interaction_id": iid, "source_mode": mode,
+                        "prompted_by_model": prompted}
             self.store.save_draft(did, mid, [{"message_id": mid, "start": span[0], "end": span[1]}], proposed,
                                   now=self.clock())
             draft_ids.append(did)
@@ -127,6 +131,24 @@ class Intake:
                 ask = ask or "有重名的人，请说明是哪一位。"
             else:
                 draft_ids.append(did)
+        if data.get("planned_meeting"):
+            pm = data["planned_meeting"]
+            who = self.resolve(pm["with"])
+            did = f"D{len(self.store.drafts()) + 1}"
+            self.store.save_draft(did, mid, [{"message_id": mid, "start": 0, "end": len(text)}],
+                                  {"target_table": "interaction", "with_name": pm["with"], "with_id": who[1],
+                                   "when": pm.get("when") or ""}, now=self.clock())
+            draft_ids.append(did)
+        for hy in data.get("hypotheses", []):
+            span, who = find_span(text, hy["source_quote"]), self.resolve(hy["subject"])
+            if span is None or who[0] == "many":
+                dropped += 1
+                continue
+            did = f"D{len(self.store.drafts()) + 1}"
+            self.store.save_draft(did, mid, [{"message_id": mid, "start": span[0], "end": span[1]}],
+                                  {"target_table": "hypothesis", "subject_name": hy["subject"], "subject_id": who[1],
+                                   "statement": hy["statement"], "proposed_by": "user"}, now=self.clock())
+            draft_ids.append(did)
         if data.get("matter"):
             did = f"D{len(self.store.drafts()) + 1}"
             self.store.save_draft(did, mid, [{"message_id": mid, "start": 0, "end": len(text)}],
@@ -231,7 +253,8 @@ class Intake:
         iid = b["interaction_id"]
         self.facts.setdefault(iid, {"cross_dept": None, "submitter": None, "responsible_named": None})
         o = self.world.add_observation(iid, tuple(d["source_spans"]), b["kind"], rep, sub, b["content"],
-                                       is_interpretation=b["is_interpretation"], source_mode=b["source_mode"])
+                                       is_interpretation=b["is_interpretation"], source_mode=b["source_mode"],
+                                       prompted_by_model=b.get("prompted_by_model", False))
         self.store.save_observation(o, d["source_spans"], did)
         if b.get("behavior_key") and b.get("occurred") is not None:
             self._ensure_opportunity(iid, sub, b["behavior_key"], b["occurred"])
@@ -256,6 +279,15 @@ class Intake:
         w = self.world
         if tt == "matter":
             return self._matter_id(b["title"], b.get("purpose", ""))
+        if tt == "interaction":
+            who = self._person_for(b["with_name"], b["with_id"])
+            iid = f"MTG-{who}-{len([i for i in w.interactions if i.startswith('MTG-')]) + 1}"
+            w.add_interaction(iid, f"与 {b['with_name']} 的会谈（{b['when']}）" if b["when"] else f"与 {b['with_name']} 的会谈", "planned")
+            w.interactions[iid]["with"] = who
+            return iid
+        if tt == "hypothesis":
+            who = self._person_for(b["subject_name"], b["subject_id"])
+            return w.add_hypothesis(who, b["statement"], proposed_by=b["proposed_by"]).id
         frm = self._person_for(b["from_name"], b["from_id"])
         to = self._person_for(b["to_name"], b["to_id"]) if b.get("to_name") else None
         if tt == "edge":

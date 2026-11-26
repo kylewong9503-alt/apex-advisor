@@ -62,6 +62,17 @@ def validate_extraction(d) -> list:
             errs.append(p + f" 全局关系需要 to，且 type 属于 {GLOBAL_TYPES}，不得带 role")
         if r.get("scope") == "matter" and r.get("role") is None and (r.get("to") is None or not r.get("type")):
             errs.append(p + " 议题内关系要么写 role，要么写 to + type")
+    pm = d.get("planned_meeting")
+    if pm is not None and not (isinstance(pm, dict) and isinstance(pm.get("with"), str) and pm["with"].strip()
+                               and isinstance(pm.get("when", ""), (str, type(None)))):
+        errs.append("planned_meeting 必须是 {with, when} 或 null")
+    hy = d.get("hypotheses", [])
+    if not isinstance(hy, list):
+        errs.append("hypotheses 必须是数组")
+        hy = []
+    for i, x in enumerate(hy):
+        if not (isinstance(x, dict) and all(isinstance(x.get(k), str) and x[k].strip() for k in ("subject", "statement", "source_quote"))):
+            errs.append(f"hypotheses[{i}] 需要非空的 subject/statement/source_quote")
     drafts = d.get("drafts")
     if not isinstance(drafts, list):
         return errs + ["drafts 必须是数组"]
@@ -96,4 +107,6 @@ drafts: 数组，每项 {"kind":"behavior|quote|hearsay","reporter":说话/看�
 matter: 用户提到要办的一件事时 {"title":议题名,"purpose":目的一句话}，否则 null
 relations: 用户明确说出的人际关系或某人在某议题里的作用，每项 {"scope":"global"(跨议题普遍成立)|"matter"(只限这件事),"matter":议题名(scope=matter 时必填),"from":姓名或"我","to":姓名或null,"type":depends_on|trusts|info_channel|owes_commitment(global)或 can_refer|needs_approval_of|influences(matter),"role":approver|referrer|influencer|blocker|informant|other 或 null,"dimension":"can"(有无权限渠道)|"will"(愿不愿意出手)|null,"source_quote":原话片段}
 只记用户明确说的；不得由职务推断意愿或关系；限定于这件事的关系一律 scope=matter。
+planned_meeting: 用户提到即将发生的会谈 {"with":对方姓名,"when":时间描述}，否则 null
+hypotheses: 用户随口说出的看法（对某人将会怎样的预期）[{"subject":姓名,"statement":一句话,"source_quote":原话片段}]；只记用户说的，不要替用户补充
 同一行为被重复描述（如“连问三次”）只写一条。source_quote 必须是原文的连续片段，不得改写。"""

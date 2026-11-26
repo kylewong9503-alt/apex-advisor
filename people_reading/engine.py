@@ -82,6 +82,7 @@ class Rule:
     outcome_type: str
     definition: str
     fn: Callable[[dict], Any] = field(compare=False, repr=False, default=lambda f: None)
+    spec: Optional[dict] = field(compare=False, repr=False, default=None)  # 声明式定义，可持久化
 
     def value(self, facts: dict) -> Any:
         return self.fn(facts)
@@ -98,12 +99,39 @@ class Rule:
         return self.p_from_value(self.outcome_type, self.value(facts), outcome)
 
 
+def _fn_from_spec(spec: dict) -> Callable[[dict], Any]:
+    k = spec["kind"]
+    if k == "const_binary":
+        return lambda f: spec["p"]
+    if k == "const_dist":
+        return lambda f: dict(spec["dist"])
+    if k == "fact_binary":  # 事实 key 未知 → None（不可求值）
+        def fn(f):
+            v = f.get(spec["key"])
+            if v is None:
+                return None
+            hit = (v is True) if spec["test"] == "is_true" else (v == spec["equals"])
+            return spec["p_if"] if hit else spec["p_else"]
+        return fn
+    raise EngineError(f"未知规则类型 {k}")
+
+
+def make_rule(id: str, name: str, behavior_key: str, spec: dict, definition: str = "") -> Rule:
+    """由声明式 spec 构造规则；outcome_type 由 spec 推出。"""
+    ot = "categorical" if spec["kind"] == "const_dist" else "binary"
+    return Rule(id, name, behavior_key, ot, definition or _canon(spec), _fn_from_spec(spec), spec)
+
+
 @dataclass(frozen=True)
 class Premise:
     id: str
     text: str  # 按 R11 写“实际发生的事及其先后”
     anchor_event: str = ""  # 以“某事件发生之前”为条件时填写
     cutoff: str = ""  # 该事件始终未发生时的截止点；有 anchor_event 则必填
+    # 以下只影响结算时的提问界面，不进入 content_hash：中性问题 + 选项（选项 → holds|violated|unclear）
+    question: str = ""
+    cutoff_question: str = ""  # 标志事件始终没发生时，改按截止点询问
+    choices: tuple = ()
 
 
 @dataclass
@@ -642,9 +670,11 @@ class Engine:
         return {"at_lock": lock_p, "before_correction": changes[0].detail["before"] if changes else None,
                 "current": row.state(), "corrected": row.facts_basis == "corrected"}
 
-    def calibration(self, include_corrected: bool = False) -> dict:
+    def calibration(self, include_corrected: bool = False, matter_id: Optional[str] = None) -> dict:
         out: dict[str, dict] = {}
         for p in self.preds.values():
+            if matter_id is not None and p.pre.matter_id != matter_id:
+                continue
             g = out.setdefault(p.pre.outcome_type, {"locked": 0, "settled": 0, "void": 0, "unobservable": 0,
                                                     "expired": 0, "_b": [], "_bb": []})
             g["locked"] += 1
@@ -670,3 +700,74 @@ class Engine:
         rows = tuple(sorted((k, r.status, r.lr, r.p1, r.p2) for k, r in self.rows.items()))
         preds = tuple(sorted((p.id, p.st.status, p.st.brier, p.st.brier_baseline) for p in self.preds.values()))
         return rows, preds
+
+
+    # ───────── 持久化：整体转成 JSON 友好的字典 ─────────
+    def to_dict(self) -> dict:
+        import dataclasses as dc
+
+        def pre(p: PreContent) -> dict:
+            d = dc.asdict(p)
+            d["premises"] = [dc.asdict(x) for x in p.premises]
+            return d
+        for r in self.rules.values():
+            if r.spec is None:
+                raise EngineError(f"规则 {r.id} 没有声明式 spec，无法持久化")
+        return {
+            "tick": self._tick, "asked": self.outcome_questions_asked,
+            "behaviors": [dc.asdict(b) for b in self.behaviors.values()],
+            "frozen": [list(x) for x in self._frozen_behaviors],
+            "rules": [{"id": r.id, "name": r.name, "behavior_key": r.behavior_key, "definition": r.definition,
+                       "spec": r.spec} for r in self.rules.values()],
+            "opps": [dc.asdict(o) for o in self.opps.values()],
+            "preds": [{"pre": pre(p.pre), "st": dc.asdict(p.st),
+                       "snaps": {k: dc.asdict(v) for k, v in p.rule_snaps.items()}} for p in self.preds.values()],
+            "outcomes": [dc.asdict(o) for o in self.outcomes.values()],
+            "rows": [dc.asdict(r) for r in self.rows.values()],
+            "revisions": [dc.asdict(r) for r in self.revisions],
+            "cx": [[k[0], k[1], v] for k, v in self._cx.items()],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Engine":
+        e = cls()
+        e._tick, e.outcome_questions_asked = d["tick"], d["asked"]
+        for b in d["behaviors"]:
+            b["categories"] = tuple(b["categories"])
+            b["category_criteria"] = tuple(tuple(x) for x in b["category_criteria"])
+            bd = BehaviorDef(**b)
+            e.behaviors[(bd.key, bd.version)] = bd
+        e._frozen_behaviors = {tuple(x) for x in d["frozen"]}
+        for r in d["rules"]:
+            e.rules[r["id"]] = make_rule(r["id"], r["name"], r["behavior_key"], r["spec"], r["definition"])
+        for o in d["opps"]:
+            e.opps[o["id"]] = Opportunity(**o)
+        for pd in d["preds"]:
+            x = pd["pre"]
+            x["premises"] = tuple(Premise(**{**q, "choices": tuple(tuple(c) for c in q.get("choices", ()))})
+                                  for q in x["premises"])
+            for k in ("conditions", "rule_defs"):
+                x[k] = tuple(tuple(i) for i in x[k])
+            for k in ("prob_dist", "baseline_dist"):
+                x[k] = tuple(tuple(i) for i in x[k]) if x[k] is not None else None
+            if x["frozen_categories"] is not None:
+                x["frozen_categories"] = tuple(x["frozen_categories"])
+            if isinstance(x["settlement_criterion"], list):
+                x["settlement_criterion"] = tuple(tuple(i) for i in x["settlement_criterion"])
+            if x["window"] is not None:
+                x["window"] = tuple(x["window"])
+            p = Prediction(PreContent(**x), Settlement(**pd["st"]),
+                           {k: RuleSnap(**v) for k, v in pd["snaps"].items()})
+            e.preds[p.id] = p
+        for o in d["outcomes"]:
+            o["source_spans"] = tuple(o["source_spans"])
+            r = OutcomeRecord(**o)
+            e.outcomes[(r.opportunity_id, r.behavior_key, r.def_version)] = r
+        for r in d["rows"]:
+            row = PairRow(**r)
+            e.rows[(row.opportunity_id, row.behavior_key, row.h1, row.h2)] = row
+        for r in d["revisions"]:
+            r["source_spans"] = tuple(r["source_spans"])
+            e.revisions.append(Revision(**r))
+        e._cx = {(a, b): v for a, b, v in d["cx"]}
+        return e

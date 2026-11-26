@@ -48,8 +48,14 @@ COMPETING = SkillVersion(
 BUILTIN = {COMPETING.skill: COMPETING}
 
 
+def _register_prep() -> None:  # 避免循环导入：premeeting 依赖 SkillVersion
+    from .premeeting import PREP
+    BUILTIN[PREP.skill] = PREP
+
+
 class SkillRegistry:
     def __init__(self, store=None) -> None:
+        _register_prep()
         self.versions: dict[str, SkillVersion] = dict(BUILTIN)
         self.enabled: dict[str, bool] = {n: True for n in BUILTIN}
         self.store = store

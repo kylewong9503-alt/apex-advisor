@@ -134,6 +134,41 @@ class Observation:
     source_mode: str = "contemporaneous"  # contemporaneous | recalled
     prompted_by_model: bool = False
     involved: list = field(default_factory=list)
+    recorded_at: int = 0
+
+
+@dataclass
+class Hypothesis:
+    """判断。formal=False 的随口看法可显示在判断卡上，但不进入比较；补齐 behavior_key 与概率后才 formal。"""
+    id: str
+    person_id: str
+    matter_id: Optional[str]
+    statement: str
+    behavior_key: Optional[str] = None
+    dist: Optional[dict] = None  # categorical：各类别概率；binary 用 p_hit
+    p_hit: Optional[float] = None
+    formal: bool = False
+    proposed_by: str = "user"  # user | model
+    formed_at: int = 0  # 判断形成时间，用于“判断形成时间线”
+    status: str = "active"  # active | needs_review | retired
+    source_spans: list = field(default_factory=list)
+
+
+@dataclass
+class Intervention:
+    """行动。“准备了”和“实际展示了”分开记：prepared_items 不影响任何预测，只有 execution_log 参与前提核对。"""
+    id: str
+    interaction_id: str
+    matter_id: str
+    goal: str  # 事前写定、可观察
+    action_description: str = ""
+    prepared_items: list = field(default_factory=list)
+    execution_log: list = field(default_factory=list)  # [{item, timing, marker, source_spans}]
+    voided_prediction_ids: list = field(default_factory=list)
+    immediate_outcome: Optional[str] = None  # achieved | partial | not_achieved
+    outcome_evidence_obs_id: Optional[str] = None
+    relationship_signals_to_watch: list = field(default_factory=list)
+    has_control: bool = False
 
 
 @dataclass
@@ -195,6 +230,9 @@ class World:
         self.interactions: dict[str, dict] = {}
         self.stat_opps: dict[str, StatOpp] = {}
         self.followups: list[Followup] = []
+        self.hypotheses: dict[str, Hypothesis] = {}
+        self.interventions: dict[str, Intervention] = {}
+        self.recall_links: list = []  # (observation_id, hypothesis_id)：这条回忆材料支持哪个判断
         self.interpretations: dict[str, dict] = {}
         self.revisions: list[Revision] = []
         self.add_person(Person(SELF, "我", is_self=True))
@@ -429,7 +467,8 @@ class World:
         if interaction_id not in self.interactions:
             self.add_interaction(interaction_id)
         o = Observation(self._nid("O", self.observations), interaction_id, tuple(source_spans), kind, reporter_id,
-                        subject_person_id, content, is_interpretation, source_mode, prompted_by_model, list(involved))
+                        subject_person_id, content, is_interpretation, source_mode, prompted_by_model, list(involved),
+                        self.now())
         self.observations[o.id] = o
         return o
 
@@ -515,3 +554,46 @@ class World:
             return True
         now = self._pair_digests(i["cited_pairs"])
         return any(now[k] != v for k, v in i.get("pair_digests", {}).items() if k in now)
+
+
+    # —— 判断（hypothesis）与回忆关联 ——
+    def add_hypothesis(self, person_id: str, statement: str, *, matter_id: Optional[str] = None,
+                       proposed_by: str = "user", behavior_key: Optional[str] = None, dist: Optional[dict] = None,
+                       p_hit: Optional[float] = None, source_spans: tuple = ()) -> Hypothesis:
+        h = Hypothesis(self._nid("H", self.hypotheses), person_id, matter_id, statement, behavior_key, dist, p_hit,
+                       False, proposed_by, self.now(), "active", list(source_spans))
+        self.hypotheses[h.id] = h
+        return h
+
+    def formalize(self, hid: str, behavior_key: str, *, dist: Optional[dict] = None, p_hit: Optional[float] = None):
+        """补齐 behavior_key 和概率后才进入比较。返回对应的声明式规则。"""
+        from .engine import make_rule
+        h = self.hypotheses[hid]
+        if (dist is None) == (p_hit is None):
+            raise WorldError("dist 与 p_hit 二选一")
+        h.behavior_key, h.dist, h.p_hit, h.formal = behavior_key, dist, p_hit, True
+        spec = {"kind": "const_dist", "dist": dist} if dist is not None else {"kind": "const_binary", "p": p_hit}
+        rule = make_rule(hid, h.statement, behavior_key, spec)
+        self.engine.add_rule(rule)
+        return rule
+
+    def link_recall(self, obs_id: str, hyp_id: str) -> None:
+        o = next(x for x in self.observations.values() if x.id == obs_id)
+        if o.source_mode != "recalled":
+            raise WorldError("只有事后回忆材料需要关联为“回忆材料”")
+        if (obs_id, hyp_id) not in self.recall_links:
+            self.recall_links.append((obs_id, hyp_id))
+
+    # —— 待办：在相关议题或人物被打开时浮出 ——
+    def surface_followups(self, *, matter_id: Optional[str] = None, person_id: Optional[str] = None) -> list:
+        out = []
+        for f in self.followups:
+            if f.status != "open":
+                continue
+            hit = (f.trigger == "matter_opened" and matter_id is not None) or \
+                  (f.trigger == "next_interaction_with_person" and person_id is not None and person_id in f.target_ref) or \
+                  (matter_id is not None and matter_id in f.target_ref)
+            if hit:
+                f.status = "surfaced"
+                out.append(f)
+        return out

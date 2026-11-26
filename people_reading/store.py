@@ -11,8 +11,8 @@ import sqlite3
 from typing import Any, Optional
 
 from . import crypto
-from .engine import Revision
-from .world import (Edge, Followup, Matter, MatterEdge, MatterRole, Observation, OrgUnit, Person, Position, StatOpp,
+from .engine import Engine, Revision
+from .world import (Edge, Followup, Hypothesis, Intervention, Matter, MatterEdge, MatterRole, Observation, OrgUnit, Person, Position, StatOpp,
                     UnitLink, World)
 
 SCHEMA = """
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS message(id INTEGER PRIMARY KEY AUTOINCREMENT, convers
 CREATE TABLE IF NOT EXISTS draft(id TEXT PRIMARY KEY, message_id INTEGER, source_spans TEXT, proposed TEXT, status TEXT, confirmed_ref TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS person(id TEXT PRIMARY KEY, display_name TEXT, aliases TEXT, is_self INTEGER, is_placeholder INTEGER, placeholder_desc TEXT, merged_into_id TEXT);
 CREATE TABLE IF NOT EXISTS interaction(id TEXT PRIMARY KEY, label TEXT, status TEXT, facts TEXT);
-CREATE TABLE IF NOT EXISTS observation(id TEXT PRIMARY KEY, interaction_id TEXT, source_spans TEXT, kind TEXT, reporter_id TEXT, subject_person_id TEXT, content TEXT, is_interpretation INTEGER, source_mode TEXT, prompted_by_model INTEGER, involved TEXT, draft_id TEXT);
+CREATE TABLE IF NOT EXISTS observation(id TEXT PRIMARY KEY, interaction_id TEXT, source_spans TEXT, kind TEXT, reporter_id TEXT, subject_person_id TEXT, content TEXT, is_interpretation INTEGER, source_mode TEXT, prompted_by_model INTEGER, involved TEXT, draft_id TEXT, recorded_at INTEGER);
 CREATE TABLE IF NOT EXISTS entity(kind TEXT, id TEXT, data TEXT, PRIMARY KEY(kind, id));
 CREATE TABLE IF NOT EXISTS followup(id TEXT PRIMARY KEY, kind TEXT, target_ref TEXT, trigger_ TEXT, text TEXT, status TEXT);
 """
@@ -132,11 +132,11 @@ class Store:
         self.db.commit()
 
     def save_observation(self, o: Observation, spans: list, draft_id: Optional[str]) -> None:
-        self.db.execute("INSERT OR REPLACE INTO observation VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        self.db.execute("INSERT OR REPLACE INTO observation VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (o.id, o.interaction_id, self._e("observation", "source_spans", o.id, spans), o.kind,
                          o.reporter_id, o.subject_person_id, self._e("observation", "content", o.id, o.content),
                          int(o.is_interpretation), o.source_mode, int(o.prompted_by_model),
-                         self._e("observation", "involved", o.id, o.involved), draft_id))
+                         self._e("observation", "involved", o.id, o.involved), draft_id, o.recorded_at))
         self.db.commit()
 
     def save_followup(self, f: Followup) -> None:
@@ -166,8 +166,16 @@ class Store:
             self.save_entity("interpretation", iid, i)
         for r in w.revisions:
             self.save_entity("world_revision", str(r.id), dataclasses.asdict(r))
-        for r in w.engine.revisions:
-            self.save_entity("engine_revision", str(r.id), dataclasses.asdict(r))
+        for f in w.followups:
+            self.save_followup(f)
+        for iid, meta in w.interactions.items():
+            self.save_entity("interaction_meta", iid, dict(meta))
+        for kind, tbl in (("hypothesis", w.hypotheses), ("intervention", w.interventions)):
+            for eid, obj in tbl.items():
+                self.save_entity(kind, eid, dataclasses.asdict(obj))
+        for i, l in enumerate(w.recall_links):
+            self.save_entity("recall_link", str(i), {"obs_id": l[0], "hyp_id": l[1]})
+        self.save_entity("engine", "state", w.engine.to_dict())  # 预测、结果、比较行、修订、规则（声明式）
         self.db.commit()
 
     def snapshot_world(self, w: World, facts: Optional[dict] = None) -> None:
@@ -202,7 +210,7 @@ class Store:
                                   d["reporter_id"], d["subject_person_id"], d["content"],
                                   is_interpretation=bool(d["is_interpretation"]), source_mode=d["source_mode"],
                                   prompted_by_model=bool(d["prompted_by_model"]), involved=tuple(d["involved"]))
-            o.id = d["id"]
+            o.id, o.recorded_at = d["id"], d["recorded_at"] or 0
         for r in self.db.execute("SELECT * FROM followup"):
             d = self._row("followup", r)
             w.followups.append(Followup(d["id"], d["kind"], d["target_ref"], d["trigger_"], d["text"], d["status"]))
@@ -212,13 +220,24 @@ class Store:
                                ("matter_edge", w.matter_edges, MatterEdge)):
             for eid, d in self.entities(kind):
                 tbl[eid] = cls(**d)
+        eng = self.entities("engine")
+        if eng:
+            w.engine = Engine.from_dict(eng[0][1])
         for oid, d in self.entities("opportunity"):
             corrected = d.pop("corrected", False)
             s = StatOpp(**d)
             w.stat_opps[oid] = s
-            o = w.engine.add_opportunity(oid, s.behavior_key, {"cross_dept": s.cross_dept, "submitter": s.target_id,
-                                                               "responsible_named": s.responsible_named}, oid)
-            o.corrected = corrected
+            if oid not in w.engine.opps:  # 旧库（无引擎快照）：由机会重建
+                o = w.engine.add_opportunity(oid, s.behavior_key, {"cross_dept": s.cross_dept, "submitter": s.target_id,
+                                                                   "responsible_named": s.responsible_named}, oid)
+                o.corrected = corrected
+        for iid, meta in self.entities("interaction_meta"):
+            w.interactions[iid] = dict(meta)
+        for eid, d in self.entities("hypothesis"):
+            w.hypotheses[eid] = Hypothesis(**d)
+        for eid, d in self.entities("intervention"):
+            w.interventions[eid] = Intervention(**d)
+        w.recall_links = [(d["obs_id"], d["hyp_id"]) for _, d in self.entities("recall_link")]
         for iid, d in self.entities("interpretation"):
             d["cited_opps"] = tuple(d["cited_opps"])
             d["cited_pairs"] = tuple(tuple(x) for x in d["cited_pairs"])
@@ -227,9 +246,6 @@ class Store:
         for _, d in self.entities("world_revision"):
             d["source_spans"] = tuple(d["source_spans"])
             w.revisions.append(Revision(**d))
-        for _, d in self.entities("engine_revision"):
-            d["source_spans"] = tuple(d["source_spans"])
-            w.engine.revisions.append(Revision(**d))
         return w, facts
 
     # —— 备份 / 导出：整体加密 ——

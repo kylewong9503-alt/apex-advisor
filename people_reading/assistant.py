@@ -50,6 +50,7 @@ class Assistant:
     def __init__(self, intake: Intake, skills: SkillRegistry) -> None:
         self.intake, self.skills = intake, skills
         self.previews: dict[str, dict] = {}
+        self.premeetings: dict[str, object] = {}
 
     @property
     def w(self):
@@ -80,6 +81,8 @@ class Assistant:
     # —— 调用 Skill ——
     def _run_skill(self, cid: str, text: str, sv, model) -> AReply:
         self.intake.store.add_message(cid, "user", text, now=self.intake.clock())
+        if sv.skill == "会前准备":
+            return self._prepare(cid, model)
         pid = self._person_in(cid, text)
         if pid is None:
             msg = "想分析哪一位？"
@@ -89,6 +92,28 @@ class Assistant:
                                         store=self.intake.store)
         self._say(cid, res["text"], "interpretation")
         return AReply(res["text"], "interpretation", interpretation_id=res["interpretation_id"])
+
+    def _prepare(self, cid: str, model) -> AReply:
+        w = self.w
+        planned = [(i, m) for i, m in w.interactions.items() if m.get("status") == "planned"]
+        pid = self.intake.focus.get(cid) or (planned[-1][1].get("with") if planned else None)
+        if not planned or not w.matters or pid is None:
+            msg = "还没有议题或计划中的会谈，先说一下要谈什么。"
+            self._say(cid, msg)
+            return AReply(msg, "ask")
+        from .premeeting import PreMeeting
+        pm = PreMeeting(self.intake, list(w.matters)[-1], pid, planned[-1][0], model or self.intake.model)
+        out = pm.prepare()
+        self.premeetings[cid] = pm
+        if out is None:
+            msg = "暂时无法生成会前准备（模型不可用或输出无效），请手动填写。"
+            self._say(cid, msg)
+            return AReply(msg, "ask")
+        msg = f"【会前准备@v1】先问你一件事：{out.fork_question['question']}\n" \
+              f"若{out.fork_question['branch_a']['condition']}，建议{out.fork_question['branch_a']['prep']}；" \
+              f"若{out.fork_question['branch_b']['condition']}，建议{out.fork_question['branch_b']['prep']}（也可以回答“记不清”）。"
+        self._say(cid, msg, "prep")
+        return AReply(msg, "prep")
 
     # —— 回忆 ——
     def _recall(self, cid: str, text: str) -> AReply:
