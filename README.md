@@ -33,3 +33,22 @@ python -m people_reading.model_eval --model deepseek-r1:14b --repeats 5
 
 环境变量：`PR_MODEL_BASE_URL`（默认 `http://127.0.0.1:11434/v1`）、`PR_MODEL`。
 非本机地址一律拒绝，没有开关；调用也不经系统代理。
+
+## 外部 API（DeepSeek 官方，可选）
+
+> ⚠ 这会把你的原话发送到外部服务，与 v4.6 “MVP 只接本地模型”的隐私规则冲突。默认关闭，必须显式开启。
+
+```bash
+export PR_PROVIDER=deepseek
+export PR_ALLOW_EXTERNAL=1            # 明确知情并开启
+export DEEPSEEK_API_KEY=sk-...        # 只放环境变量，不要写进文件或提交
+```
+
+```python
+from people_reading.llm import make_model
+model = make_model()                  # 按 PR_PROVIDER 返回 LocalModel 或 RemoteModel
+# Intake(store, world, model) 照常使用；远程失败会退回手动表单，原话仍已加密保存
+```
+
+`PR_MODEL` 默认 `deepseek-chat`；`deepseek-reasoner` 也支持。只允许 `https://api.deepseek.com`。
+密钥不落盘、不进日志、不进异常信息。评测：`python -m people_reading.model_eval --provider deepseek`。

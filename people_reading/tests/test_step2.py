@@ -320,3 +320,87 @@ def test_model_eval_scores(monkeypatch):
     sloppy = ScriptedModel(["垃圾"] * 40)
     bad = model_eval.evaluate(sloppy, repeats=1)
     assert any(v == 0.0 for v in bad["rates"].values())
+
+
+# ───────── 外部 API（DeepSeek）：默认关闭，显式开启 ─────────
+from people_reading.llm import MissingApiKey, RemoteModel, RemoteModelError, make_model  # noqa: E402
+
+KEY = "sk-test-abcdef123456"
+ON = {"PR_ALLOW_EXTERNAL": "1"}
+
+
+def test_remote_off_by_default_and_needs_key_and_whitelisted_https():
+    with pytest.raises(ExternalModelRefused):
+        RemoteModel(api_key=KEY, env={})  # 没开启开关
+    with pytest.raises(MissingApiKey):
+        RemoteModel(env=ON)
+    with pytest.raises(ExternalModelRefused):
+        RemoteModel(base_url="https://evil.example.com", api_key=KEY, env=ON)  # 不在白名单
+    with pytest.raises(ExternalModelRefused):
+        RemoteModel(base_url="http://api.deepseek.com", api_key=KEY, env=ON)  # 非 https
+    m = RemoteModel(api_key=KEY, env=ON)
+    assert m.base_url == "https://api.deepseek.com" and KEY not in repr(m)
+
+
+def test_key_is_stripped_and_validated_without_echo():
+    assert RemoteModel(api_key=KEY + "\n", env=ON)._key == KEY
+    with pytest.raises(MissingApiKey) as e:
+        RemoteModel(api_key="sk 含中文", env=ON)
+    assert "sk" not in str(e.value)
+
+
+def test_make_model_selects_provider():
+    assert isinstance(make_model({}), LocalModel)
+    assert isinstance(make_model({"PR_PROVIDER": "deepseek", **ON, "DEEPSEEK_API_KEY": KEY}), RemoteModel)
+    with pytest.raises(ExternalModelRefused):
+        make_model({"PR_PROVIDER": "deepseek", "DEEPSEEK_API_KEY": KEY})  # 只有 key 不够
+    with pytest.raises(ValueError):
+        make_model({"PR_PROVIDER": "x"})
+
+
+def test_remote_request_shape_and_key_never_leaks(stub):
+    srv, url = stub
+    seen_headers = []
+    orig = _Stub.do_POST
+
+    def spy(self):
+        seen_headers.append(self.headers["Authorization"])
+        orig(self)
+    _Stub.do_POST = spy
+    try:
+        _Stub.replies = [json.dumps(extraction())]
+        m = RemoteModel(base_url=url, api_key=KEY, env=ON, allowed_hosts=("127.0.0.1",), require_https=False)
+        assert m.structured("系统", "用户", validate_extraction)["intent"] == "record"
+        assert seen_headers == [f"Bearer {KEY}"]
+        body = _Stub.seen[0]
+        assert body["model"] == "deepseek-chat" and body["response_format"] == {"type": "json_object"}
+        assert "json" in body["messages"][1]["content"]
+        r = RemoteModel("deepseek-reasoner", url, api_key=KEY, env=ON, allowed_hosts=("127.0.0.1",), require_https=False)
+        _Stub.replies = [json.dumps(extraction())]
+        r.chat("s", "u")
+        assert "response_format" not in _Stub.seen[1]
+    finally:
+        _Stub.do_POST = orig
+
+
+def test_remote_errors_carry_status_only_and_fall_back(env):
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(401); self.send_header("Content-Length", "0"); self.end_headers()
+
+        def log_message(self, *a):
+            pass
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        m = RemoteModel(base_url=f"http://127.0.0.1:{srv.server_port}", api_key=KEY, env=ON,
+                        allowed_hosts=("127.0.0.1",), require_https=False)
+        with pytest.raises(RemoteModelError) as e:
+            m.chat("s", "u")
+        assert "401" in str(e.value) and KEY not in str(e.value)
+        st, it = env([])
+        it.model = m
+        r = it.handle("c1", TEXT1)  # 远程失败 → 退回手动表单，原话仍保存
+        assert r.fallback and st.get_message(r.message_id)["text"] == TEXT1
+    finally:
+        srv.shutdown()

@@ -9,6 +9,7 @@ import ipaddress
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 from typing import Callable, Optional
 from urllib.parse import urlparse
@@ -94,6 +95,75 @@ class LocalModel:
                 return data
             last = errs
         raise ModelOutputInvalid("；".join(last))
+
+
+class MissingApiKey(Exception):
+    pass
+
+
+class RemoteModelError(OSError):
+    """远程调用失败。信息里只有状态码，不含密钥、请求体或响应体。继承 OSError，录入流程会自动退回手动表单。"""
+
+
+class RemoteModel:
+    """DeepSeek 官方 API（OpenAI 兼容）。⚠ 会把用户原话发到外部服务，与 v4.6 “只接本地模型”的隐私规则冲突。
+
+    因此必须同时满足：环境变量 PR_ALLOW_EXTERNAL=1（明确知情并开启）、DEEPSEEK_API_KEY 已设置、
+    主机在白名单内且为 https。密钥只来自环境变量，不落盘、不进日志、不进异常信息。
+    不做“替换姓名”的伪脱敏：规格已说明仅替换姓名不足以去标识。
+    """
+
+    DEFAULT_URL = "https://api.deepseek.com"
+    ALLOWED_HOSTS = ("api.deepseek.com",)
+
+    def __init__(self, model: str = "deepseek-chat", base_url: str = DEFAULT_URL, *, api_key: Optional[str] = None,
+                 timeout: float = 120.0, allowed_hosts: tuple = ALLOWED_HOSTS, require_https: bool = True,
+                 env: Optional[dict] = None) -> None:
+        env = os.environ if env is None else env
+        if env.get("PR_ALLOW_EXTERNAL") != "1":
+            raise ExternalModelRefused("外部模型默认关闭。确认接受“原话会发送到外部服务”后，设置 PR_ALLOW_EXTERNAL=1")
+        u = urlparse(base_url)
+        if u.hostname not in allowed_hosts or (require_https and u.scheme != "https"):
+            raise ExternalModelRefused(f"主机 {u.hostname!r} 不在白名单，或不是 https")
+        self._key = (api_key or env.get("DEEPSEEK_API_KEY", "")).strip()
+        if not self._key:
+            raise MissingApiKey("未设置 DEEPSEEK_API_KEY")
+        if not (self._key.isascii() and self._key.isprintable() and " " not in self._key):
+            raise MissingApiKey("DEEPSEEK_API_KEY 含有非法字符（检查是否粘贴了多余内容）")  # 不回显密钥
+        self.model, self.base_url, self.timeout, self.calls = model, base_url.rstrip("/"), timeout, 0
+
+    def __repr__(self) -> str:  # 避免密钥经 repr 泄漏
+        return f"RemoteModel(model={self.model!r}, base_url={self.base_url!r})"
+
+    def chat(self, system: str, user: str) -> str:
+        payload = {"model": self.model, "temperature": 0, "stream": False,
+                   "messages": [{"role": "system", "content": system},
+                                {"role": "user", "content": user + "\n\n请只输出 json。"}]}  # DeepSeek 要求提示里含 json
+        if self.model != "deepseek-reasoner":  # reasoner 不支持 response_format
+            payload["response_format"] = {"type": "json_object"}
+        req = urllib.request.Request(self.base_url + "/chat/completions", data=json.dumps(payload).encode(),
+                                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {self._key}"})
+        self.calls += 1
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return json.loads(r.read())["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            raise RemoteModelError(f"远程模型返回 HTTP {e.code}") from None
+        except urllib.error.URLError as e:
+            raise RemoteModelError(f"无法连接远程模型（{type(e.reason).__name__}）") from None
+
+    structured = LocalModel.structured
+
+
+def make_model(env: Optional[dict] = None):
+    """按 PR_PROVIDER 选择：local（默认）| deepseek。"""
+    env = os.environ if env is None else env
+    provider = env.get("PR_PROVIDER", "local")
+    if provider == "local":
+        return LocalModel(env.get("PR_MODEL_BASE_URL", DEFAULT_BASE_URL), env.get("PR_MODEL", DEFAULT_MODEL))
+    if provider == "deepseek":
+        return RemoteModel(env.get("PR_MODEL", "deepseek-chat"), env=env)
+    raise ValueError("PR_PROVIDER 只能是 local 或 deepseek")
 
 
 class ScriptedModel:

@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 from .intake import Intake
-from .llm import DEFAULT_BASE_URL, DEFAULT_MODEL, LocalModel
+from .llm import DEFAULT_BASE_URL, DEFAULT_MODEL, LocalModel, make_model
 from .store import Store
 from .world import Person, World
 
@@ -111,10 +111,16 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    ap.add_argument("--provider", choices=("local", "deepseek"), default="local",
+                    help="deepseek 会把评测用例发往外部服务，需 PR_ALLOW_EXTERNAL=1 与 DEEPSEEK_API_KEY")
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--bar", type=float, default=0.9)
     a = ap.parse_args(argv)
-    model = LocalModel(a.base_url, a.model)  # 非本机地址在这里就会被拒绝
+    if a.provider == "deepseek":
+        model = make_model({**__import__("os").environ, "PR_PROVIDER": "deepseek",
+                                                       "PR_MODEL": "deepseek-chat" if a.model == DEFAULT_MODEL else a.model})
+    else:
+        model = LocalModel(a.base_url, a.model)  # 非本机地址在这里就会被拒绝
     res = evaluate(model, a.repeats)
     print(json.dumps(res, ensure_ascii=False, indent=1))
     bad = {k: v for k, v in res["rates"].items() if v < a.bar}
