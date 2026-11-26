@@ -480,24 +480,38 @@ class World:
         return {"interactions": n, "recalled": k, "text": text}
 
     # —— 解读与“依据已变化” ——
+    @staticmethod
+    def _h(obj) -> str:
+        return hashlib.sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+
     def _digest(self, cited_opps, cited_pairs) -> str:
-        data = {"opps": {o: self.engine.opps[o].facts for o in cited_opps},
-                "pairs": {f"{o}|{a}|{b}": next((r.state() for k, r in self.engine.rows.items()
-                                                if k[0] == o and k[2:] == (a, b)), None)
-                          for (o, a, b) in cited_pairs}}
-        for v in data["pairs"].values():
-            if v:
-                v.pop("facts_basis", None)
-        return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+        """被引用机会的事实摘要（随 World 一起持久化，重新打开后仍可比较）。"""
+        return self._h({o: self.engine.opps[o].facts for o in cited_opps})
+
+    def _pair_digests(self, cited_pairs) -> dict:
+        """被引用规则对的当前比较状态摘要。预测尚未持久化时，重新打开后这些行不存在 → 视为“无法比较”，不报变化。"""
+        out = {}
+        for (o, a, b) in cited_pairs:
+            row = next((r for k, r in self.engine.rows.items() if k[0] == o and k[2:] == (a, b)), None)
+            if row is not None:
+                st = row.state()
+                st.pop("facts_basis", None)
+                out[f"{o}|{a}|{b}"] = self._h(st)
+        return out
 
     def save_interpretation(self, question: str, output: str, *, cited_opps=(), cited_pairs=(),
-                            open_questions=()) -> str:
+                            open_questions=(), **meta) -> str:
+        """meta：skill_version_id / conversation_id / person_ids / matter_id 等，原样保存。"""
         iid = f"INT{len(self.interpretations) + 1}"
         self.interpretations[iid] = {"question": question, "output": output, "cited_opps": tuple(cited_opps),
                                      "cited_pairs": tuple(cited_pairs), "open_questions": tuple(open_questions),
-                                     "input_digest": self._digest(cited_opps, cited_pairs)}
+                                     "input_digest": self._digest(cited_opps, cited_pairs),
+                                     "pair_digests": self._pair_digests(cited_pairs), **meta}
         return iid
 
     def interpretation_changed(self, iid: str) -> bool:
         i = self.interpretations[iid]
-        return self._digest(i["cited_opps"], i["cited_pairs"]) != i["input_digest"]
+        if self._digest(i["cited_opps"], i["cited_pairs"]) != i["input_digest"]:
+            return True
+        now = self._pair_digests(i["cited_pairs"])
+        return any(now[k] != v for k, v in i.get("pair_digests", {}).items() if k in now)

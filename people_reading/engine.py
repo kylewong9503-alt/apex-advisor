@@ -480,7 +480,7 @@ class Engine:
                     p.rule_snaps[rid] = RuleSnap(copy.deepcopy(v), v is not None)
         self.write_settlement_fields(pid, **updates)
         if end:
-            self._log("void" if end == "void_premise_changed" else "watch_item", pid,
+            self._log("void", pid,
                       {"status": end, "premise_check": check}, reason="前提核对：" + "；".join(
                           f"{c['text']} → {c['status']}（{c['quote']}）" for c in check.values()), prediction_id=pid)
         self._recompute(opp_id, "结算 " + pid)

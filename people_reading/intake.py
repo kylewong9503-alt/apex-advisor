@@ -47,7 +47,17 @@ class Intake:
         self.store, self.world, self.model, self.clock = store, world, model, clock
         self.aliases: dict[str, list] = {}
         self.facts: dict[str, dict] = {}
+        self.last_iid: dict[str, str] = {}  # 对话 → 最近一次涉及的互动
+        self.focus: dict[str, str] = {}  # 对话 → 当前在聊的人物
         self._seq = 0
+
+    def adopt_world(self) -> None:
+        """从已有 World 恢复人名索引（重新打开应用后调用）。"""
+        for p in self.world.persons.values():
+            if not p.is_self and p.merged_into_id is None:
+                self.aliases.setdefault(p.display_name, [])
+                if p.id not in self.aliases[p.display_name]:
+                    self.aliases[p.display_name].append(p.id)
 
     # —— 人物 ——
     def register_person(self, p: Person, aliases: tuple = ()) -> None:
@@ -107,11 +117,29 @@ class Intake:
             self.store.save_draft(did, mid, [{"message_id": mid, "start": span[0], "end": span[1]}], proposed,
                                   now=self.clock())
             draft_ids.append(did)
+            if sub[1] and sub[1] != SELF:
+                self.focus[cid] = sub[1]  # 当前在聊的人
+        for r in data.get("relations", []):
+            did = self._relation_draft(r, text, mid, iid)
+            if did is None:
+                dropped += 1
+            elif did == "ambiguous":
+                ask = ask or "有重名的人，请说明是哪一位。"
+            else:
+                draft_ids.append(did)
+        if data.get("matter"):
+            did = f"D{len(self.store.drafts()) + 1}"
+            self.store.save_draft(did, mid, [{"message_id": mid, "start": 0, "end": len(text)}],
+                                  {"target_table": "matter", "title": data["matter"]["title"],
+                                   "purpose": data["matter"].get("purpose") or ""}, now=self.clock())
+            draft_ids.append(did)
         if data.get("interaction") and any(v is not None for v in data["interaction"].values()):
             if iid is None:
                 self._seq += 1
                 iid = f"INT-{cid}-{self._seq}"
             self._merge_facts(iid, data["interaction"])
+        if iid:
+            self.last_iid[cid] = iid
         q = ask or data.get("clarifying_question")
         self.store.set_pending(cid, {"interaction_id": iid, "question": q} if q and iid else None)
         n = len(draft_ids)
@@ -124,6 +152,28 @@ class Intake:
                 line += "\n要一起分析吗"
         self.store.add_message(cid, "assistant", line, now=self.clock())
         return Reply(line, data["intent"], draft_ids, q, False, dropped, mid)
+
+    def _relation_draft(self, r: dict, text: str, mid: int, iid: Optional[str]):
+        """关系/角色草稿：必须有原话依据；人物不猜；用户说的关系 proposed_by=user。"""
+        span = find_span(text, r["source_quote"])
+        if span is None:
+            return None
+        a = self.resolve(r["from"])
+        b = self.resolve(r["to"]) if r.get("to") else ("none", None)
+        if "many" in (a[0], b[0]):
+            return "ambiguous"
+        if r["scope"] == "global":
+            body = {"target_table": "edge", "type": r["type"]}
+        elif r.get("role"):
+            body = {"target_table": "matter_role", "role": r["role"], "dimension": r.get("dimension"),
+                    "matter_title": r["matter"]}
+        else:
+            body = {"target_table": "matter_edge", "type": r["type"], "dimension": r.get("dimension"),
+                    "matter_title": r["matter"]}
+        body.update(from_name=r["from"], from_id=a[1], to_name=r.get("to"), to_id=b[1], proposed_by="user")
+        did = f"D{len(self.store.drafts()) + 1}"
+        self.store.save_draft(did, mid, [{"message_id": mid, "start": span[0], "end": span[1]}], body, now=self.clock())
+        return did
 
     def _merge_facts(self, iid: str, new: dict) -> None:
         cur = self.facts.setdefault(iid, {"cross_dept": None, "submitter": None, "responsible_named": None})
@@ -165,6 +215,13 @@ class Intake:
         if d["status"] not in ("pending",):
             return d["confirmed_ref"]
         b = {**d["proposed"], **(edits or {})}
+        tt = b.get("target_table", "observation")
+        if tt != "observation":
+            ref = self._confirm_structural(tt, b)
+            self.store.save_draft(did, d["message_id"], d["source_spans"], b, "edited" if edits else "confirmed", ref,
+                                  self.clock())
+            self.store.sync_world(self.world)
+            return ref
         if edits:
             for side in ("reporter", "subject"):
                 if f"{side}_name" in edits and f"{side}_id" not in edits:
@@ -180,7 +237,39 @@ class Intake:
             self._ensure_opportunity(iid, sub, b["behavior_key"], b["occurred"])
         self.store.save_draft(did, d["message_id"], d["source_spans"], b, "edited" if edits else "confirmed", o.id,
                               self.clock())
+        self.store.sync_world(self.world)
         return o.id
+
+    def _matter_id(self, title: str, purpose: str = "") -> str:
+        for m in self.world.matters.values():
+            if m.title == title:
+                if purpose and m.purpose != purpose:
+                    if m.purpose:  # 目的可改，改动写 revision
+                        self.world._log("purpose_change", m.id, {"before": m.purpose, "after": purpose}, "用户修改目的")
+                    m.purpose = purpose
+                return m.id
+        mid = f"MT{len(self.world.matters) + 1}"
+        self.world.add_matter(mid, title, purpose)
+        return mid
+
+    def _confirm_structural(self, tt: str, b: dict) -> str:
+        w = self.world
+        if tt == "matter":
+            return self._matter_id(b["title"], b.get("purpose", ""))
+        frm = self._person_for(b["from_name"], b["from_id"])
+        to = self._person_for(b["to_name"], b["to_id"]) if b.get("to_name") else None
+        if tt == "edge":
+            # 用户自述的全局关系：已确认的“自述”，不是被核实的事实（source_tier=self_reported，见 attributes）
+            return w.add_edge(frm, to, "interactional", b["type"], proposed_by=b["proposed_by"],
+                              status="confirmed", source_tier="self_reported").id
+        mt = self._matter_id(b["matter_title"])
+        if tt == "matter_role":
+            # will 需要行为证据：用户说“他愿意”也只是 proposed；can/未定维度由用户自述即可 confirmed
+            status = "proposed" if b.get("dimension") == "will" else "confirmed"
+            return w.add_matter_role(mt, frm, b["role"], dimension=b.get("dimension"), status=status,
+                                     proposed_by=b["proposed_by"]).id
+        return w.add_matter_edge(mt, frm, to, b["type"], status="confirmed", dimension=b.get("dimension"),
+                                 proposed_by=b["proposed_by"]).id
 
     def _ensure_opportunity(self, iid: str, actor: str, behavior_key: str, occurred: bool) -> None:
         """同一互动、同一行为者、同一行为只有一个机会；“连问三次”只计一次发生。"""

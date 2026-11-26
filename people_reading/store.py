@@ -5,12 +5,15 @@ load_world() 把已确认的数据装回 World；World 的计算逻辑不依赖�
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
 from typing import Any, Optional
 
 from . import crypto
-from .world import Followup, Observation, Person, World
+from .engine import Revision
+from .world import (Edge, Followup, Matter, MatterEdge, MatterRole, Observation, OrgUnit, Person, Position, StatOpp,
+                    UnitLink, World)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
@@ -20,6 +23,7 @@ CREATE TABLE IF NOT EXISTS draft(id TEXT PRIMARY KEY, message_id INTEGER, source
 CREATE TABLE IF NOT EXISTS person(id TEXT PRIMARY KEY, display_name TEXT, aliases TEXT, is_self INTEGER, is_placeholder INTEGER, placeholder_desc TEXT, merged_into_id TEXT);
 CREATE TABLE IF NOT EXISTS interaction(id TEXT PRIMARY KEY, label TEXT, status TEXT, facts TEXT);
 CREATE TABLE IF NOT EXISTS observation(id TEXT PRIMARY KEY, interaction_id TEXT, source_spans TEXT, kind TEXT, reporter_id TEXT, subject_person_id TEXT, content TEXT, is_interpretation INTEGER, source_mode TEXT, prompted_by_model INTEGER, involved TEXT, draft_id TEXT);
+CREATE TABLE IF NOT EXISTS entity(kind TEXT, id TEXT, data TEXT, PRIMARY KEY(kind, id));
 CREATE TABLE IF NOT EXISTS followup(id TEXT PRIMARY KEY, kind TEXT, target_ref TEXT, trigger_ TEXT, text TEXT, status TEXT);
 """
 
@@ -140,6 +144,45 @@ class Store:
                         (f.id, f.kind, f.target_ref, f.trigger, self._e("followup", "text", f.id, f.text), f.status))
         self.db.commit()
 
+    # —— 通用实体（结构层、机会、解读、修订）：整体加密的 JSON ——
+    def save_entity(self, kind: str, eid: str, data: dict) -> None:
+        rid = f"{kind}:{eid}"
+        self.db.execute("INSERT OR REPLACE INTO entity VALUES(?,?,?)", (kind, eid, self._e("entity", "data", rid, data)))
+
+    def entities(self, kind: str) -> list:
+        return [(r["id"], self._d("entity", "data", f"{kind}:{r['id']}", r["data"]))
+                for r in self.db.execute("SELECT id, data FROM entity WHERE kind=? ORDER BY rowid", (kind,))]
+
+    def sync_world(self, w: World) -> None:
+        """把 World 里可持久化的结构、机会、解读、修订整体落库（幂等 upsert）。"""
+        tables = {"org_unit": w.units, "position": w.positions, "unit_link": w.unit_links, "edge": w.edges,
+                  "matter": w.matters, "matter_role": w.roles, "matter_edge": w.matter_edges}
+        for kind, tbl in tables.items():
+            for eid, obj in tbl.items():
+                self.save_entity(kind, eid, dataclasses.asdict(obj))
+        for oid, o in w.stat_opps.items():
+            self.save_entity("opportunity", oid, {**dataclasses.asdict(o), "corrected": w.engine.opps[oid].corrected})
+        for iid, i in w.interpretations.items():
+            self.save_entity("interpretation", iid, i)
+        for r in w.revisions:
+            self.save_entity("world_revision", str(r.id), dataclasses.asdict(r))
+        for r in w.engine.revisions:
+            self.save_entity("engine_revision", str(r.id), dataclasses.asdict(r))
+        self.db.commit()
+
+    def snapshot_world(self, w: World, facts: Optional[dict] = None) -> None:
+        """完整落库：人物、互动、观察、待办 + 结构/机会/解读/修订。用于首次导入与测试。"""
+        for p in w.persons.values():
+            if p.id != "user":
+                self.save_person(p)
+        for iid, i in w.interactions.items():
+            self.save_interaction(iid, i.get("label", ""), i.get("status", "occurred"), (facts or {}).get(iid, {}))
+        for o in w.observations.values():
+            self.save_observation(o, [s if isinstance(s, dict) else {"text": s} for s in o.source_spans], None)
+        for f in w.followups:
+            self.save_followup(f)
+        self.sync_world(w)
+
     def load_world(self) -> tuple:
         """返回 (World, {interaction_id: facts})。只装回人物、互动、观察、待办。"""
         w = World()
@@ -155,7 +198,7 @@ class Store:
             facts[d["id"]] = d["facts"]
         for r in self.db.execute("SELECT * FROM observation ORDER BY rowid"):
             d = self._row("observation", r)
-            o = w.add_observation(d["interaction_id"], tuple(d["source_spans"]), d["kind"],
+            o = w.add_observation(d["interaction_id"], tuple(x["text"] if set(x) == {"text"} else x for x in d["source_spans"]), d["kind"],
                                   d["reporter_id"], d["subject_person_id"], d["content"],
                                   is_interpretation=bool(d["is_interpretation"]), source_mode=d["source_mode"],
                                   prompted_by_model=bool(d["prompted_by_model"]), involved=tuple(d["involved"]))
@@ -163,6 +206,30 @@ class Store:
         for r in self.db.execute("SELECT * FROM followup"):
             d = self._row("followup", r)
             w.followups.append(Followup(d["id"], d["kind"], d["target_ref"], d["trigger_"], d["text"], d["status"]))
+        for kind, tbl, cls in (("org_unit", w.units, OrgUnit), ("position", w.positions, Position),
+                               ("unit_link", w.unit_links, UnitLink), ("edge", w.edges, Edge),
+                               ("matter", w.matters, Matter), ("matter_role", w.roles, MatterRole),
+                               ("matter_edge", w.matter_edges, MatterEdge)):
+            for eid, d in self.entities(kind):
+                tbl[eid] = cls(**d)
+        for oid, d in self.entities("opportunity"):
+            corrected = d.pop("corrected", False)
+            s = StatOpp(**d)
+            w.stat_opps[oid] = s
+            o = w.engine.add_opportunity(oid, s.behavior_key, {"cross_dept": s.cross_dept, "submitter": s.target_id,
+                                                               "responsible_named": s.responsible_named}, oid)
+            o.corrected = corrected
+        for iid, d in self.entities("interpretation"):
+            d["cited_opps"] = tuple(d["cited_opps"])
+            d["cited_pairs"] = tuple(tuple(x) for x in d["cited_pairs"])
+            d["open_questions"] = tuple(d["open_questions"])
+            w.interpretations[iid] = d
+        for _, d in self.entities("world_revision"):
+            d["source_spans"] = tuple(d["source_spans"])
+            w.revisions.append(Revision(**d))
+        for _, d in self.entities("engine_revision"):
+            d["source_spans"] = tuple(d["source_spans"])
+            w.engine.revisions.append(Revision(**d))
         return w, facts
 
     # —— 备份 / 导出：整体加密 ——
