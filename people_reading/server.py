@@ -20,7 +20,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
 from .crypto import WrongPassphrase
-from .flow import build_settle_steps, ask, build_prep_steps, open_ask, render_flow
+from .flow import build_settle_steps, ask, check, build_prep_steps, open_ask, render_flow
 from .intake import Intake
 from .llm import RemoteModel, make_model
 from .engine import EngineError
@@ -46,6 +46,16 @@ def is_loopback(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return host == "localhost"
+
+
+KIND_LABEL = {"commitment": "承诺", "commitment_update": "承诺进展", "edge": "人与人的关系", "hypothesis": "你对他的判断",
+              "interaction": "计划中的会谈", "matter": "要办的事", "matter_role": "他在这件事里的角色", "matter_edge": "这件事里的关系",
+              "behavior": "你看到的", "quote": "他说的话", "hearsay": "别人转述"}
+
+
+def kind_label(proposed: dict) -> str:
+    """每条草稿是哪一类，让你一眼看出这一屏里的几条各是什么（同一句话常被拆成几类）。"""
+    return KIND_LABEL.get(proposed.get("target_table") if proposed.get("target_table") not in (None, "observation") else proposed.get("kind"), "")
 
 
 def _page(body: str, title: str = BRAND) -> str:
@@ -125,14 +135,44 @@ class App:
     def banner(self) -> str:
         return "外部模型已开启：你在这里输入的原话会发送给 DeepSeek" if self.external() else ""
 
-    def pending_steps(self) -> list:
-        """待确认的草稿：每条一个问题。原话片段由程序定位，这里展示的是原话，不是模型的转述。"""
-        store, steps = self.lock.store, []
+    def pending_steps(self, only=None) -> list:
+        """待确认的草稿，按“一条原话”分组：一条原话一屏，默认全选，取消勾选的就是不记。
+        只有一条时仍是“记下 / 不记”。展示的是你的原话片段（程序定位），不是模型的转述。only：只看这些草稿 id。"""
+        store, groups = self.lock.store, {}
         for d in store.drafts(status="pending", conversation_id=self.CID):
-            quote = " … ".join(store.quote(sp) for sp in d["source_spans"])
-            steps.append(ask("记下这一条吗？", [("记下", "", ""), ("不记", "", "")], cue=f"原话：{quote}", selected=0,
-                             act={"url": "/confirm", "fields": {"id": d["id"]}}))
+            if only is None or d["id"] in only:
+                groups.setdefault(d["message_id"], []).append(d)
+        steps = []
+        for mid, ds in groups.items():
+            quotes = {d["id"]: " … ".join(store.quote(sp) for sp in d["source_spans"]) for d in ds}
+            if len(ds) == 1:
+                d = ds[0]
+                steps.append(ask("记下这一条吗？", [("记下", "", ""), ("不记", "", "")], cue=f"原话：{quotes[d['id']]}", selected=0,
+                                 act={"url": "/confirm", "fields": {"id": d["id"]}}))
+            else:
+                steps.append(check(f"这 {len(ds)} 条都记下吗？", [(d["id"], quotes[d["id"]], kind_label(d["proposed"])) for d in ds],
+                                   cue="从你说的这段话里整理出来的",
+                                   act={"url": "/confirm_many", "fields": {"msg": str(mid)}}))
         return steps
+
+    def confirm_many(self, msg: str, ids: str) -> None:
+        store = self.lock.store
+        group = [d for d in store.drafts(status="pending", conversation_id=self.CID) if str(d["message_id"]) == msg]
+        if not group:
+            raise KeyError(msg)
+        keep = {i for i in ids.split(",") if i}
+        if not keep <= {d["id"] for d in group}:
+            raise KeyError("ids")  # 只能处理这一组里还在等你的草稿
+        for d in group:
+            (self.intake.confirm if d["id"] in keep else self.intake.reject)(d["id"])
+        store.sync_world(self._world())
+
+    def _has_judgment(self) -> bool:
+        got = self._planned()
+        if got is None:
+            return True  # 没有计划中的会谈：不在这里拦（会前页自己会退回手动）
+        w = self._world()
+        return any(h.person_id == got[1]["with"] and h.proposed_by == "user" and h.status != "retired" for h in w.hypotheses.values())
 
     def pre_meeting(self, mid: str):
         if self.model is None or mid in self.pm_failed:
@@ -155,18 +195,34 @@ class App:
         w = self._world()
         rd = Redactor(w, "masked" if self.masked else "code")
         steps = self.settle_steps() or self.lock_steps() or self.pending_steps()
+        if not steps and w.matters and not self._has_judgment():
+            # 会前准备是“你的判断 vs 另一种可能”：你还没说出判断时不调用模型，先问你
+            steps = [open_ask("你觉得他会先问什么？", cue=w.matters[list(w.matters)[-1]].title, act={"url": "/say", "fields": {}})]
         if not steps and w.matters:
             mid = list(w.matters)[-1]
             pm = self.pre_meeting(mid)
             v = workbench_view(w, mid, store, prep=pm.prep if pm else None)
             steps = build_prep_steps(v)
             if pm and steps and steps[-1]["kind"] == "answer":
-                lockb = [{"label": "锁定预测", "act": {"url": "/lock/start", "fields": {}, "reload": True}}] \
-                    if pm.prep.category_draft is not None else []
-                steps[-1]["buttons"] = [{"label": "记为行动", "act": {"url": "/act", "fields": {}}}] + lockb + \
-                    ([{"label": "会后", "act": {"url": "/settle/start", "fields": {}, "reload": True}}] if self._settleable() else [])
+                eng = w.engine
+                locked = any(p.pre.matter_id == mid and p.st.status == "locked" for p in eng.preds.values())
+                acted = any(i.matter_id == mid for i in w.interventions.values())
+                btns = [{"label": "✓ 已记为行动", "disabled": True} if acted else {"label": "记为行动", "act": {"url": "/act", "fields": {}}}]
+                if pm.prep.category_draft is not None:
+                    btns.append({"label": "✓ 已锁定预测", "disabled": True} if locked else
+                                {"label": "锁定预测", "act": {"url": "/lock/start", "fields": {}, "reload": True}})
+                if self._settleable():
+                    btns.append({"label": "会后", "act": {"url": "/settle/start", "fields": {}, "reload": True}})
+                steps[-1]["buttons"] = btns
         steps = steps or [open_ask("今天想记一件什么事？", cue="直接说，不用先选人或填表", act={"url": "/say", "fields": {}})]
-        return render_flow(steps, rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner())
+        return render_flow(steps, rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner(),
+                           say_href="" if steps[0]["kind"] == "open" else "/say")
+
+    def say_html(self) -> str:
+        """随时记一句：不论现在在哪个流程里。"""
+        rd = Redactor(self._world(), "masked" if self.masked else "code")
+        step = open_ask("想记一件什么事？", cue="直接说，不用先选人或填表", act={"url": "/say", "fields": {}})
+        return render_flow([step], rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner())
 
     def library_html(self) -> str:
         store = self.lock.store
@@ -236,7 +292,7 @@ class App:
                             cue=f"依据：{basis}" if basis else "", selected=sel, act={"url": "/settle/outcome", "fields": {}})]
         if s.state == "settled":
             pending = {d["id"] for d in self.lock.store.drafts(status="pending")}
-            mine = [x for x in self.pending_steps() if x["act"]["fields"]["id"] in pending and x["act"]["fields"]["id"] in s.report_drafts]
+            mine = self.pending_steps(only=set(s.report_drafts) & pending)
             if mine:
                 return mine  # 报告里的草稿先由你逐条确认，系统不替你确认
             if self.sess_review is None:
@@ -525,6 +581,10 @@ def make_handler(app: App):
                     with app.mutex:
                         body = app.flow_html()
                     return self._send(200, body)
+                if path == "/say":
+                    with app.mutex:
+                        body = app.say_html()
+                    return self._send(200, body)
                 if path == "/library":
                     with app.mutex:
                         body = app.library_html()
@@ -568,6 +628,8 @@ def make_handler(app: App):
                 with app.mutex:
                     if path == "/say":
                         app.say((form.get("text") or [""])[0][:4000])
+                    elif path == "/confirm_many":
+                        app.confirm_many((form.get("msg") or [""])[0], (form.get("ids") or [""])[0])
                     elif path == "/confirm":
                         app.confirm((form.get("id") or [""])[0], (form.get("choice") or ["1"])[0])
                     elif path == "/act":

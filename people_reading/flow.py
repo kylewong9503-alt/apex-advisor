@@ -31,6 +31,11 @@ def ask(q: str, options: list, *, cue: str = "", selected: Optional[int] = 0, ac
     return {"kind": "ask", "q": q, "cue": cue, "options": [dict(text=t, mark=m, sub=s) for t, m, s in options], "selected": selected, "act": act}
 
 
+def check(q: str, items: list, *, cue: str = "", act: Optional[dict] = None) -> dict:
+    """多选：items = [(id, 文字, 说明)]，默认全选；你取消勾选的就是“不记”。一屏处理一条原话产生的所有草稿。"""
+    return {"kind": "check", "q": q, "cue": cue, "items": [dict(id=i, text=t, sub=s) for i, t, s in items], "act": act}
+
+
 def open_ask(q: str, *, cue: str = "", act: Optional[dict] = None) -> dict:
     return {"kind": "open", "q": q, "cue": cue, "act": act}
 
@@ -146,7 +151,7 @@ body{margin:0;background:var(--surface);color:var(--ink);font:15px/26px var(--fo
 .body{flex:1;min-width:0;padding:56px clamp(24px,6vw,96px);display:flex;flex-direction:column;justify-content:space-between;max-width:880px;margin:0 auto;width:100%}
 .hd{display:flex;justify-content:space-between;align-items:center}
 .brand{font:600 18px/1 var(--font-sans);letter-spacing:.06em;display:inline-flex;align-items:center;gap:10px}.brand svg{border-radius:9px;box-shadow:0 0 0 1px var(--line)}
-.dots{display:flex}.dots svg{width:34px;height:34px}
+.hr{display:flex;align-items:center;gap:var(--space-3)}.say{height:34px;font-size:14px}.dots{display:flex}.dots svg{width:34px;height:34px}
 .cue{font:500 11px/16px var(--font-sans);letter-spacing:.16em;color:var(--ink-muted);margin-bottom:16px}
 h1{font:600 clamp(26px,3.2vw,44px)/1.4 var(--font-sans);letter-spacing:.02em;margin:0 0 40px}
 .opts{display:flex;flex-direction:column}
@@ -154,7 +159,10 @@ h1{font:600 clamp(26px,3.2vw,44px)/1.4 var(--font-sans);letter-spacing:.02em;mar
 .opt:last-child{border-bottom:1px solid var(--line)}
 .opt .k{width:26px;height:26px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);font-size:12px;display:flex;align-items:center;justify-content:center;color:var(--ink-muted);flex:none}
 .opt small{display:block;font-size:13px;color:var(--ink-muted)}
-.opt[aria-checked=true]{border-radius:var(--radius-md);background:var(--ai);color:var(--on-ai);margin:0 -16px;padding:18px 16px;width:calc(100% + 32px);border-color:var(--ai)}
+.opt[role=checkbox] .k{color:transparent}.opt[role=checkbox][aria-checked=true] .k{background:var(--ai);border-color:var(--ai);color:var(--on-ai)}
+.opt[role=checkbox][aria-checked=true]{background:none;color:var(--ink);margin:0;padding:18px 0;width:100%;border-color:var(--line);border-radius:0}
+.opt[role=checkbox][aria-checked=true] small{color:var(--ink-muted);opacity:1}
+.opt[aria-checked=true]:not([role=checkbox]){border-radius:var(--radius-md);background:var(--ai);color:var(--on-ai);margin:0 -16px;padding:18px 16px;width:calc(100% + 32px);border-color:var(--ai)}
 .opt[aria-checked=true] .k{border-color:var(--on-ai);color:var(--on-ai)}.opt[aria-checked=true] small{color:var(--on-ai);opacity:.85}
 .mk-you,.mk-model,.mk-rec{display:inline-block;margin-right:8px;flex:none}
 .mk-you{width:10px;height:10px;border-radius:50%;background:var(--ai)}.mk-model{width:10px;height:10px;border-radius:50%;border:1.5px dashed var(--hanada)}
@@ -184,10 +192,11 @@ function cur(){var m=(location.hash||'#/1').match(/(\\d+)/);return m?+m[1]:1}
 function next(){location.hash='#/'+Math.min(n,cur()+1)}
 addEventListener('hashchange',function(){go(cur())});go(cur());
 document.addEventListener('click',function(e){var o=e.target.closest('.opt');
+ if(o&&o.getAttribute('role')==='checkbox'){o.setAttribute('aria-checked',o.getAttribute('aria-checked')==='true'?'false':'true');return}
  if(o){[].forEach.call(o.parentNode.children,function(x){x.setAttribute('aria-checked',x===o?'true':'false')});var b=o.closest('.step').querySelector('[data-next]');b&&(b.disabled=false);return}
  var a=e.target.closest('[data-act]');
  if(a){e.preventDefault();var d=JSON.parse(a.dataset.fields||'{}'),st=a.closest('.step'),ch=st.querySelector('.opt[aria-checked=true]'),ta=st.querySelector('textarea');
-  if(ch)d.choice=[].indexOf.call(ch.parentNode.children,ch);if(ta)d.text=ta.value;if(a.hasAttribute('data-once')&&a.disabled)return;a.disabled=true;
+  if(ch)d.choice=[].indexOf.call(ch.parentNode.children,ch);var cks=st.querySelectorAll('.opt[role=checkbox]');if(cks.length)d.ids=[].filter.call(cks,function(x){return x.getAttribute('aria-checked')==='true'}).map(function(x){return x.dataset.id}).join(',');if(ta)d.text=ta.value;if(a.hasAttribute('data-once')&&a.disabled)return;a.disabled=true;
   fetch(a.dataset.act,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(d)}).then(function(r){
    if(!r.ok)throw 0;if(a.hasAttribute('data-once')){a.textContent='已记下'}else{location.href='/'}}).catch(function(){a.disabled=false;a.textContent='没成功，再试一次'});return}
  if(e.target.closest('[data-next]')){e.preventDefault();next()}});
@@ -199,7 +208,7 @@ document.addEventListener('keydown',function(e){var s=S[cur()-1];if(!s||e.target
 VARIANTS = [("classic", "l"), ("banded", "r"), ("dotted", "t"), ("ripple", "l"), ("tide", "r"), ("fade", "t")]
 
 
-def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAND, library_href: str = "", head_extra: str = "", banner: str = "") -> str:
+def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAND, library_href: str = "", head_extra: str = "", banner: str = "", say_href: str = "") -> str:
     T = rd.t if rd is not None else (lambda x: x)
     e = lambda x: E(T(str(x)))  # noqa: E731  动态内容：遮挡时不输出原文
     masked = bool(rd is not None and rd.masked)
@@ -216,7 +225,8 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
             vi += 1
         art = pattern(variant, 560 if side != "t" else 1440, 900 if side != "t" else 230, uid=str(i),
                       ground="var(--kon)" if dark else "var(--surface)")
-        hd = f"<div class='hd'><span class='brand'>{mark_svg(32)}{BRAND}</span>{steps_dots(i + 1, total)}</div>"
+        say = f"<a class='btn q say' href='{E(say_href)}'>记一句</a>" if say_href else ""
+        hd = f"<div class='hd'><span class='brand'>{mark_svg(32)}{BRAND}</span><span class='hr'>{say}{steps_dots(i + 1, total)}</span></div>"
         cue = f"<div class='cue'>{e(s['cue'])}</div>" if s.get("cue") else ""
         def actattr(a):  # 这一步的“继续”要先把选择提交给服务：{"url": "/confirm", "fields": {...}}
             if not a:
@@ -233,6 +243,13 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
                 + (f"<small>{e(o['sub'])}</small>" if o["sub"] else "") + "</span></button>" for k, o in enumerate(s["options"]))
             core = f"{cue}<h1>{e(s['q'])}</h1><div class='opts' role='radiogroup' aria-label='选项'>{os_}</div>"
             ft = f"<div class='ft'>{skip}<button type='button' class='btn p' data-next{actattr(s.get('act'))}{'' if s['selected'] is not None else ' disabled'}>继续　↵</button></div>"
+        elif s["kind"] == "check":
+            os_ = "".join(
+                f"<button type='button' class='opt' role='checkbox' aria-checked='true' data-id='{E(it['id'])}'>"
+                f"<span class='k' aria-hidden='true'>✓</span><span>{e(it['text'])}" + (f"<small>{e(it['sub'])}</small>" if it["sub"] else "")
+                + "</span></button>" for it in s["items"])
+            core = f"{cue}<h1>{e(s['q'])}</h1><div class='opts' role='group' aria-label='选项'>{os_}</div>"
+            ft = f"<div class='ft'><span class='mut'>取消勾选的不记</span><button type='button' class='btn p' data-next{actattr(s.get('act'))}>记下所选</button></div>"
         elif s["kind"] == "open":
             core = f"{cue}<h1>{e(s['q'])}</h1><textarea rows='5' aria-label='你的回答' placeholder='按你记得的说就行，原话越接近越好'></textarea>"
             ft = "<div class='ft'><span></span><button type='button' class='btn p' data-next{actattr(s.get('act'))}>提交</button></div>"
@@ -240,6 +257,8 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
             core = (f"{cue}<p class='line'>“{e(s['line'])}”</p><p class='why'>{e(s['reason'])}</p>")
             def one(k, b):
                 label, a = (b, None) if isinstance(b, str) else (b["label"], b.get("act"))
+                if not isinstance(b, str) and b.get("disabled"):
+                    return f"<button type='button' class='btn o' disabled>{E(label)}</button>"
                 return f"<button type='button' class='btn {'p' if k == 0 else 'o'}'{(actattr(a) + ('' if a.get('reload') else ' data-once') + (' data-reload' if a.get('reload') else '')) if a else ''}>{E(label)}</button>"
             btns = "".join(one(k, b) for k, b in enumerate(s["buttons"]))
             ft = f"<div class='ft'><div>{btns}</div><button type='button' class='btn q' data-next>会后</button></div>" if not last else f"<div class='ft'><div>{btns}</div></div>"

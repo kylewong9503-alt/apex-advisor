@@ -120,12 +120,17 @@ def test_say_confirm_flow_writes_only_after_user_confirms(tmp_path):
         assert "今天想记一件什么事" in body and "<textarea" in body
         assert req(s, "POST", "/say", "text=" + quote(T4.C1_TEXT), headers=ck)[0] == 303
         st, _, body = req(s, "GET", "/", headers=ck)
-        assert "记下这一条吗" in body and "原话：" in body  # 先出确认，不直接写入
+        assert "都记下吗" in body and "记下所选" in body and "role='checkbox'" in body  # 先出确认，不直接写入
         assert not s.app.w.observations  # 没确认前世界里什么都没有
-        did = s.app.lock.store.drafts(status="pending")[0]["id"]
-        assert req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)[0] == 303
-        assert any(d["status"] == "confirmed" for d in s.app.lock.store.drafts())
-        assert req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)[0] == 409  # 已处理，不重复
+        pend = s.app.lock.store.drafts(status="pending")
+        did, msg = pend[0]["id"], pend[0]["message_id"]
+        assert req(s, "POST", "/confirm_many", f"msg={msg}&ids=D999", headers=ck)[0] == 409  # 不属于这一组的 id
+        keep = ",".join(d["id"] for d in pend[:-1])  # 最后一条取消勾选 = 不记
+        assert req(s, "POST", "/confirm_many", f"msg={msg}&ids={keep}", headers=ck)[0] == 303
+        st_ = {d["id"]: d["status"] for d in s.app.lock.store.drafts()}
+        assert st_[pend[-1]["id"]] == "rejected" and all(st_[i] == "confirmed" for i in keep.split(","))
+        assert req(s, "POST", "/confirm_many", f"msg={msg}&ids={keep}", headers=ck)[0] == 409  # 已处理，不重复
+        assert req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)[0] == 409
         assert req(s, "POST", "/confirm", "id=D999&choice=0", headers=ck)[0] == 409
     finally:
         s.shutdown(); s.server_close()
@@ -211,12 +216,12 @@ def test_settlement_end_to_end_over_http(tmp_path):
         from people_reading.skillset import labels
         n_labels = len(labels(s.app.lock.store))
         body = req(s, "GET", "/", headers=ck)[2]
-        assert "记下这一条吗" in body  # 报告里的草稿先由你确认：打开页面不会替你确认
+        assert "记下" in body and "data-act='/confirm" in body  # 报告里的草稿先由你确认：打开页面不会替你确认
         rep = s.app.sess.report_drafts
         assert rep and all(d["status"] == "pending" for d in s.app.lock.store.drafts() if d["id"] in rep)
         assert len(labels(s.app.lock.store)) == n_labels  # 没确认就没有回测标签
-        for did in rep:
-            assert req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)[0] == 303
+        msg = next(d["message_id"] for d in s.app.lock.store.drafts() if d["id"] in rep)
+        assert req(s, "POST", "/confirm_many", f"msg={msg}&ids={','.join(rep)}", headers=ck)[0] == 303
         assert len(labels(s.app.lock.store)) == n_labels + len(rep)
         body = req(s, "GET", "/", headers=ck)[2]
         assert "4×" in body and "结果" in body
