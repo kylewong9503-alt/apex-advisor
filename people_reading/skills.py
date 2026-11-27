@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .cards import FORBIDDEN
+from .ranking import discriminating_signals
 from .stats import MIN_KNOWN, dim_a, dim_b, dim_c, known_opps, rate
 from .world import SELF, World
 
@@ -113,6 +114,7 @@ def build_packet(w: World, person_id: str, *, recent_days: int = 10) -> dict:
             "overall": overall, "dim_a": da, "dim_b": db, "dim_c": dc, "excluded_unknown_opps": excluded,
             "interactions": sorted(interactions), "badge": badge, "pairs": pairs, "recall_only_rows": recall_only,
             "followups": [{"id": f.id, "text": f.text, "target": f.target_ref} for f in followups], "roles": roles,
+            "ranked_signals": [{k: v for k, v in e.items() if k != "facts"} for e in discriminating_signals(w, person_id)],
             "cited_opps": sorted(s.id for s in opps),
             "cited_pairs": sorted({(k[0], k[2], k[3]) for k, r in w.engine.rows.items()
                                    if r.status != "not_evaluable" and k[2] in rule_ids and k[3] in rule_ids})}
@@ -121,6 +123,13 @@ def build_packet(w: World, person_id: str, *, recent_days: int = 10) -> dict:
 def _signals(packet: dict) -> list:
     """下次值得观察的信号：只写看什么、能分清什么、代价；零代价的观察信号优先。"""
     out = []
+    for r in packet["ranked_signals"]:  # 先放按 3.9 排好序的（观察信号 → 当面询问）
+        if r["status"] == "ranked":
+            out.append({"kind": r["kind"], "cost": r["cost"], "separates": "、".join(r["separates"]), "text": r["text"]})
+    unrated = [r for r in packet["ranked_signals"] if r["status"] == "unrated"]
+    if unrated:
+        out.append({"kind": "待评估代价", "cost": None, "separates": "、".join(unrated[0]["separates"]),
+                    "text": f"还有 {len(unrated)} 个场景能区分这些解释（如：{unrated[0]['name']}），请先评估观察它们要付出的代价"})
     a, b, c = packet["dim_a"], packet["dim_b"], packet["dim_c"]
     n = packet["name"]
     if a["state"] == "待区分":
@@ -204,7 +213,7 @@ def run_competing_explanation(w: World, person_id: str, question: str, *, model=
              "已有解释：" + "；".join(existing),
              "累计倍数和次数：" + "；".join(cumulative),
              "尚未排除：" + ("；".join(unresolved) if unresolved else "无"),
-             "下次值得观察：" + ("；".join(f"{s['text']}（{s['kind']}，代价 {s['cost']}）" for s in signals) if signals else "无"),
+             "下次值得观察：" + ("；".join(f"{s['text']}（{s['kind']}，" + ("代价 " + str(s["cost"]) if s["cost"] is not None else "待你评估代价") + "）" for s in signals) if signals else "无"),
              f"依据：{b['text']}；统计口径：材料未写负责人的提案，共 {packet['overall']['known']} 次已知机会"]
     text = "\n".join(lines)
     open_questions = unresolved + [s["text"] for s in signals if s["kind"] == "补充条件"]

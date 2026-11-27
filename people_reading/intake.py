@@ -86,6 +86,9 @@ class Intake:
         mid = self.store.add_message(cid, "user", text, now=self.clock())  # 先保存原话，任何失败都不丢
         pending = self.store.get_pending(cid)
         prompt = f"已知人物：{self._known()}（“我”是用户本人）\n"
+        open_c = [c for c in self.world.commitments.values() if c.status == "open"]
+        if open_c:
+            prompt += "已记录且未关闭的承诺：" + "；".join(f"{c.id}={c.content}" for c in open_c) + "\n"
         if pending:
             prompt += f"你上一轮问用户：{pending['question']}\n下面是用户对它的回答。\n"
         prompt += f"用户原话：{text}"
@@ -131,6 +134,28 @@ class Intake:
                 ask = ask or "有重名的人，请说明是哪一位。"
             else:
                 draft_ids.append(did)
+        for c in data.get("commitments", []):
+            span, a, b = find_span(text, c["source_quote"]), self.resolve(c["from"]), self.resolve(c["to"])
+            if span is None or "many" in (a[0], b[0]):
+                dropped += 1
+                continue
+            did = f"D{len(self.store.drafts()) + 1}"
+            self.store.save_draft(did, mid, [{"message_id": mid, "start": span[0], "end": span[1]}],
+                                  {"target_table": "commitment", "from_name": c["from"], "from_id": a[1], "to_name": c["to"],
+                                   "to_id": b[1], "content": c["content"], "due_text": c.get("due_text") or "",
+                                   "interaction_id": iid or f"INT-{cid}-c"}, now=self.clock())
+            draft_ids.append(did)
+        for u in data.get("commitment_updates", []):
+            span = find_span(text, u["source_quote"])
+            if span is None or u["id"] not in self.world.commitments or self.world.commitments[u["id"]].status != "open":
+                dropped += 1  # 编号不存在或已关闭：不猜
+                continue
+            did = f"D{len(self.store.drafts()) + 1}"
+            self.store.save_draft(did, mid, [{"message_id": mid, "start": span[0], "end": span[1]}],
+                                  {"target_table": "commitment_update", "commitment_id": u["id"], "status": u["status"],
+                                   "content": self.world.commitments[u["id"]].content,
+                                   "interaction_id": iid or f"INT-{cid}-c"}, now=self.clock())
+            draft_ids.append(did)
         if data.get("planned_meeting"):
             pm = data["planned_meeting"]
             who = self.resolve(pm["with"])
@@ -238,6 +263,12 @@ class Intake:
             return d["confirmed_ref"]
         b = {**d["proposed"], **(edits or {})}
         tt = b.get("target_table", "observation")
+        if tt in ("commitment", "commitment_update"):
+            ref = self._confirm_commitment(tt, b, d["source_spans"])
+            self.store.save_draft(did, d["message_id"], d["source_spans"], b, "edited" if edits else "confirmed", ref,
+                                  self.clock())
+            self.store.sync_world(self.world)
+            return ref
         if tt != "observation":
             ref = self._confirm_structural(tt, b)
             self.store.save_draft(did, d["message_id"], d["source_spans"], b, "edited" if edits else "confirmed", ref,
@@ -274,6 +305,24 @@ class Intake:
         mid = f"MT{len(self.world.matters) + 1}"
         self.world.add_matter(mid, title, purpose)
         return mid
+
+    def _confirm_commitment(self, tt: str, b: dict, spans: list) -> str:
+        """承诺：先把原话存成观察（R3），再写账本。到期、兑现、违约都不由系统自动判断，只记用户说的。"""
+        w = self.world
+        iid = b["interaction_id"]
+        if tt == "commitment":
+            frm = self._person_for(b["from_name"], b["from_id"])
+            to = self._person_for(b["to_name"], b["to_id"])
+            o = w.add_observation(iid, tuple(spans), "behavior", SELF, frm, f"承诺：{b['content']}")
+            self.store.save_observation(o, spans, None)
+            return w.add_commitment(frm, to, b["content"], evidence_obs_id=o.id, due_at=b.get("due_at"),
+                                    due_text=b.get("due_text", "")).id
+        c = w.commitments[b["commitment_id"]]
+        word = "兑现" if b["status"] == "fulfilled" else "未兑现"
+        o = w.add_observation(iid, tuple(spans), "behavior", SELF, c.from_person_id, f"{word}：{c.content}")
+        self.store.save_observation(o, spans, None)
+        w.close_commitment(c.id, b["status"], closing_obs_id=o.id)
+        return c.id
 
     def _confirm_structural(self, tt: str, b: dict) -> str:
         w = self.world

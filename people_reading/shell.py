@@ -66,7 +66,7 @@ def _plain_workbench(rd: Redactor) -> str:
 
 
 def render_app(w, store=None, *, mode: str = "code", prep=None, conversations: Optional[list] = None,
-               toggle_href: str = "", title: str = "识人系统") -> str:
+               toggle_href: str = "", title: str = "识人系统", auto_quadrants: bool = False) -> str:
     rd = Redactor(w, mode)
     convs = conversations if conversations is not None else (store.conversations() if store is not None else [])
     # 工作台：最近的议题（没有议题时只有对话与输入框）
@@ -75,7 +75,7 @@ def render_app(w, store=None, *, mode: str = "code", prep=None, conversations: O
         wb = matter_body(workbench_view(w, mid, store, prep=prep), build_matter_graph(w, mid, store, rd), rd)
     else:
         wb = _plain_workbench(rd)
-    q = quadrants.render_quadrants(quadrants.build_quadrants(w, rd))
+    q = quadrants.render_quadrants(quadrants.build_quadrants(w, rd, auto=auto_quadrants))
     people = [p for p in w.persons.values() if not p.is_self and not p.is_placeholder and not p.merged_into_id]
     person_pages = "".join(
         f"<section data-view='person' data-id='{E(rd.ref(p.id))}'><p><a href='#/people'>← 人物</a></p>"

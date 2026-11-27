@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 from . import crypto
 from .engine import Engine, Revision
-from .world import (Edge, Followup, Hypothesis, Intervention, Matter, MatterEdge, MatterRole, Observation, OrgUnit, Person, Position, StatOpp,
+from .world import (Commitment, Edge, Followup, Hypothesis, Intervention, Matter, MatterEdge, MatterRole, Observation, OrgUnit, Person, Position, StatOpp,
                     UnitLink, World)
 
 SCHEMA = """
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS conversation(id TEXT PRIMARY KEY, title TEXT, matter_id TEXT, created_at TEXT, updated_at TEXT, pending_json TEXT);
 CREATE TABLE IF NOT EXISTS message(id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT, role TEXT, text TEXT, card_type TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS draft(id TEXT PRIMARY KEY, message_id INTEGER, source_spans TEXT, proposed TEXT, status TEXT, confirmed_ref TEXT, created_at TEXT);
-CREATE TABLE IF NOT EXISTS person(id TEXT PRIMARY KEY, display_name TEXT, aliases TEXT, is_self INTEGER, is_placeholder INTEGER, placeholder_desc TEXT, merged_into_id TEXT, code TEXT, influence INTEGER, quadrant_manual TEXT, quadrant_set_at INTEGER);
+CREATE TABLE IF NOT EXISTS person(id TEXT PRIMARY KEY, display_name TEXT, aliases TEXT, is_self INTEGER, is_placeholder INTEGER, placeholder_desc TEXT, merged_into_id TEXT, code TEXT, influence INTEGER, quadrant_manual TEXT, quadrant_set_at INTEGER, quadrant_auto TEXT);
 CREATE TABLE IF NOT EXISTS interaction(id TEXT PRIMARY KEY, label TEXT, status TEXT, facts TEXT);
 CREATE TABLE IF NOT EXISTS observation(id TEXT PRIMARY KEY, interaction_id TEXT, source_spans TEXT, kind TEXT, reporter_id TEXT, subject_person_id TEXT, content TEXT, is_interpretation INTEGER, source_mode TEXT, prompted_by_model INTEGER, involved TEXT, draft_id TEXT, recorded_at INTEGER);
 CREATE TABLE IF NOT EXISTS entity(kind TEXT, id TEXT, data TEXT, PRIMARY KEY(kind, id));
@@ -124,11 +124,11 @@ class Store:
 
     # —— 事实 ——
     def save_person(self, p: Person, aliases: tuple = ()) -> None:
-        self.db.execute("INSERT OR REPLACE INTO person VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        self.db.execute("INSERT OR REPLACE INTO person VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                         (p.id, self._e("person", "display_name", p.id, p.display_name),
                          self._e("person", "aliases", p.id, list(aliases)), int(p.is_self), int(p.is_placeholder),
                          self._e("person", "placeholder_desc", p.id, p.placeholder_desc), p.merged_into_id,
-                         p.code, p.influence, p.quadrant_manual, p.quadrant_set_at))
+                         p.code, p.influence, p.quadrant_manual, p.quadrant_set_at, p.quadrant_auto))
         self.db.commit()
 
     def save_interaction(self, iid: str, label: str, status: str, facts: dict) -> None:
@@ -178,19 +178,21 @@ class Store:
             if self.db.execute("SELECT 1 FROM person WHERE id=?", (p.id,)).fetchone():
                 self.db.execute(
                     "UPDATE person SET display_name=?, is_placeholder=?, placeholder_desc=?, merged_into_id=?, code=?, influence=?,"
-                    " quadrant_manual=?, quadrant_set_at=? WHERE id=?",
+                    " quadrant_manual=?, quadrant_set_at=?, quadrant_auto=? WHERE id=?",
                     (self._e("person", "display_name", p.id, p.display_name), int(p.is_placeholder),
                      self._e("person", "placeholder_desc", p.id, p.placeholder_desc), p.merged_into_id, p.code,
-                     p.influence, p.quadrant_manual, p.quadrant_set_at, p.id))  # 保留已存的别名
+                     p.influence, p.quadrant_manual, p.quadrant_set_at, p.quadrant_auto, p.id))  # 保留已存的别名
             else:
                 self.save_person(p)
         for f in w.followups:
             self.save_followup(f)
         for iid, meta in w.interactions.items():
             self.save_entity("interaction_meta", iid, dict(meta))
-        for kind, tbl in (("hypothesis", w.hypotheses), ("intervention", w.interventions)):
+        for kind, tbl in (("hypothesis", w.hypotheses), ("intervention", w.interventions), ("commitment", w.commitments)):
             for eid, obj in tbl.items():
                 self.save_entity(kind, eid, dataclasses.asdict(obj))
+        for i, ((pid, sn), (kind, cost)) in enumerate(w.scene_ratings.items()):
+            self.save_entity("scene_rating", str(i), {"person": pid, "scene": sn, "kind": kind, "cost": cost})
         for i, l in enumerate(w.recall_links):
             self.save_entity("recall_link", str(i), {"obs_id": l[0], "hyp_id": l[1]})
         self.save_entity("engine", "state", w.engine.to_dict())  # 预测、结果、比较行、修订、规则（声明式）
@@ -218,7 +220,7 @@ class Store:
             if d["id"] != "user":
                 w.add_person(Person(d["id"], d["display_name"], bool(d["is_self"]), bool(d["is_placeholder"]),
                                     d["placeholder_desc"], d["merged_into_id"], d["quadrant_manual"], d["code"] or "",
-                                    d["influence"] or 3, d["quadrant_set_at"]))
+                                    d["influence"] or 3, d["quadrant_set_at"], d["quadrant_auto"]))
         for r in self.db.execute("SELECT * FROM interaction"):
             d = self._row("interaction", r)
             w.add_interaction(d["id"], d["label"], d["status"])
@@ -254,6 +256,10 @@ class Store:
             w.interactions[iid] = dict(meta)
         for eid, d in self.entities("hypothesis"):
             w.hypotheses[eid] = Hypothesis(**d)
+        for _, d in self.entities("scene_rating"):
+            w.scene_ratings[(d["person"], d["scene"])] = (d["kind"], d["cost"])
+        for eid, d in self.entities("commitment"):
+            w.commitments[eid] = Commitment(**d)
         for eid, d in self.entities("intervention"):
             w.interventions[eid] = Intervention(**d)
         w.recall_links = [(d["obs_id"], d["hyp_id"]) for _, d in self.entities("recall_link")]

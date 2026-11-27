@@ -15,6 +15,7 @@ E = html.escape
 LAYOUT = (("近-深", "远-深"), ("近-浅", "远-浅"))  # 上行：了解深；下行：了解浅
 UNSET = "未分类"
 NOTE = "象限由你手动设置"
+NOTE_AUTO = "手动设置的优先；没有手动设置的，由系统按互动关系与证据自动计算（标“自动”）"
 
 
 def role_summary(w: World, pid: str) -> Optional[str]:
@@ -56,7 +57,8 @@ def notable(w: World, pid: str) -> Optional[str]:
     return None
 
 
-def build_quadrants(w: World, rd: Optional[Redactor] = None) -> dict:
+def build_quadrants(w: World, rd: Optional[Redactor] = None, auto: bool = False) -> dict:
+    """auto=False：MVP 口径，只看手动设置。auto=True：手动优先，其余用系统计算的 quadrant_auto。"""
     rd = rd or Redactor(w, "code")
     cards = {q: [] for q in (*(c for row in LAYOUT for c in row), UNSET)}
     for p in w.persons.values():
@@ -66,17 +68,24 @@ def build_quadrants(w: World, rd: Optional[Redactor] = None) -> dict:
         card = {"id": p.id, "ref": rd.ref(p.id), "code": rd.p(p.id), "title": rd.t(pos.title) if pos else rd.t("职务未知"),
                 "role": rd.t(role_summary(w, p.id) or "暂无议题角色"), "note": rd.t(notable(w, p.id) or ""),
                 "influence": p.influence}
-        cards[p.quadrant_manual if p.quadrant_manual in cards else UNSET].append(card)
+        q = p.quadrant if auto else p.quadrant_manual
+        if auto:
+            card["source"] = p.quadrant_source
+            if p.quadrant_manual and p.quadrant_auto and p.quadrant_auto != p.quadrant_manual:
+                card["suggestion"] = p.quadrant_auto  # 手动与系统建议不一致：提示，不覆盖
+        cards[q if q in cards else UNSET].append(card)
     for lst in cards.values():
         lst.sort(key=lambda c: (-c["influence"], c["code"]))
     ph = sum(1 for p in w.persons.values() if p.is_placeholder and not p.merged_into_id)
-    return {"layout": [list(r) for r in LAYOUT], "cards": cards, "note": NOTE, "placeholders": ph,
+    return {"layout": [list(r) for r in LAYOUT], "cards": cards, "note": NOTE_AUTO if auto else NOTE, "placeholders": ph,
             "axes": {"x": "关系远近（近 ← → 远）", "y": "了解深浅（深 ↑ ↓ 浅）"}}
 
 
 def card_html(c: dict) -> str:
-    return (f"<a class='pcard' href='#/person/{E(c['ref'])}' data-person='{E(c['ref'])}'><b>{E(c['code'])}</b>｜{E(c['title'])}｜{E(c['role'])}"
-            + (f"<div class='mut'>{E(c['note'])}</div>" if c["note"] else "") + "</a>")
+    tag = " <span class='mut'>（自动）</span>" if c.get("source") == "auto" else ""
+    sug = f"<div class='mut'>系统建议：{E(c['suggestion'])}</div>" if c.get("suggestion") else ""
+    return (f"<a class='pcard' href='#/person/{E(c['ref'])}' data-person='{E(c['ref'])}'><b>{E(c['code'])}</b>{tag}｜{E(c['title'])}｜{E(c['role'])}"
+            + (f"<div class='mut'>{E(c['note'])}</div>" if c["note"] else "") + sug + "</a>")
 
 
 def render_quadrants(q: dict) -> str:

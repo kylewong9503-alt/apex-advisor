@@ -218,7 +218,8 @@ class PreMeeting:
         p = self.w.engine.lock_prediction(
             id=f"P-{len(self.w.engine.preds) + 1}", person_id=self.person_id, matter_id=self.matter_id,
             behavior_key=beh.key, bind_mode="specific_item", opportunity_id=self.iid, rules=rules,
-            premises=(premise,), prob_dist=prob_dist, baseline_note=baseline_note)
+            premises=(premise,), prob_dist=prob_dist, baseline_note=baseline_note,
+            quadrant_at_lock=self.w.persons[self.person_id].quadrant)  # 锁定时的象限，之后象限变化也可追溯
         self.w.followups.append(Followup(f"F{len(self.w.followups) + 1}", "settle_prediction", p.id, "after_meeting",
                                          f"会后结算 {p.id}"))
         self.intake.store.sync_world(self.w)

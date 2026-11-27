@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .engine import Engine, EngineError, Revision
 
@@ -32,6 +32,15 @@ class Person:
     code: str = ""  # 代号；界面默认显示代号而不是姓名。为空时用 id
     influence: int = 3  # 1–5，象限内排序用
     quadrant_set_at: Optional[int] = None
+    quadrant_auto: Optional[str] = None  # 系统按证据与互动算出的象限；手动设置优先
+
+    @property
+    def quadrant(self) -> Optional[str]:
+        return self.quadrant_manual or self.quadrant_auto
+
+    @property
+    def quadrant_source(self) -> str:
+        return "manual" if self.quadrant_manual else ("auto" if self.quadrant_auto else "")
 
     @property
     def shown_code(self) -> str:
@@ -159,6 +168,7 @@ class Hypothesis:
     formed_at: int = 0  # 判断形成时间，用于“判断形成时间线”
     status: str = "active"  # active | needs_review | retired
     source_spans: list = field(default_factory=list)
+    scope: str = "person"  # person：关于这个人本身；relation：关于他和我的关系（关系远近变化时需复核）
 
 
 @dataclass
@@ -176,6 +186,22 @@ class Intervention:
     outcome_evidence_obs_id: Optional[str] = None
     relationship_signals_to_watch: list = field(default_factory=list)
     has_control: bool = False
+
+
+@dataclass
+class Commitment:
+    """承诺账本：谁欠谁什么、何时到期、依据哪句原话。只记录，不打分，不据兑现情况给人下判断。"""
+    id: str
+    from_person_id: str  # 欠的人
+    to_person_id: str  # 被欠的人
+    content: str
+    made_at: int  # 做出承诺的日子（World.today 口径）
+    due_at: Optional[int] = None
+    due_text: str = ""
+    status: str = "open"  # open | fulfilled | broken | cancelled；“逾期”由 due_at 与今天推出，不存储
+    evidence_obs_id: Optional[str] = None  # 做出承诺的原话（必填，R3）
+    closing_obs_id: Optional[str] = None  # 兑现/违约的原话
+    closed_at: Optional[int] = None
 
 
 @dataclass
@@ -240,6 +266,9 @@ class World:
         self.hypotheses: dict[str, Hypothesis] = {}
         self.interventions: dict[str, Intervention] = {}
         self.recall_links: list = []  # (observation_id, hypothesis_id)：这条回忆材料支持哪个判断
+        self.commitments: dict[str, Commitment] = {}
+        self.scene_ratings: dict = {}  # (person_id, 场景名) → (kind, cost)：你对“看这个场景要付出多少代价”的评估
+        self.today_fn: Callable[[], int] = lambda: __import__("datetime").date.today().toordinal()
         self.interpretations: dict[str, dict] = {}
         self.revisions: list[Revision] = []
         self.add_person(Person(SELF, "我", is_self=True))
@@ -472,7 +501,7 @@ class World:
         if kind not in ("behavior", "quote", "hearsay"):
             raise WorldError("kind 非法")
         if interaction_id not in self.interactions:
-            self.add_interaction(interaction_id)
+            self.add_interaction(interaction_id, day=self.today_fn())  # 真实日期；合成数据显式传 day
         o = Observation(self._nid("O", self.observations), interaction_id, tuple(source_spans), kind, reporter_id,
                         subject_person_id, content, is_interpretation, source_mode, prompted_by_model, list(involved),
                         self.now())
@@ -566,9 +595,11 @@ class World:
     # —— 判断（hypothesis）与回忆关联 ——
     def add_hypothesis(self, person_id: str, statement: str, *, matter_id: Optional[str] = None,
                        proposed_by: str = "user", behavior_key: Optional[str] = None, dist: Optional[dict] = None,
-                       p_hit: Optional[float] = None, source_spans: tuple = ()) -> Hypothesis:
+                       p_hit: Optional[float] = None, source_spans: tuple = (), scope: str = "person") -> Hypothesis:
+        if scope not in ("person", "relation"):
+            raise WorldError("scope 只能是 person 或 relation")
         h = Hypothesis(self._nid("H", self.hypotheses), person_id, matter_id, statement, behavior_key, dist, p_hit,
-                       False, proposed_by, self.now(), "active", list(source_spans))
+                       False, proposed_by, self.now(), "active", list(source_spans), scope)
         self.hypotheses[h.id] = h
         return h
 
@@ -597,9 +628,10 @@ class World:
         for f in self.followups:
             if f.status != "open":
                 continue
+            toks = f.target_ref.split(":")
             hit = (f.trigger == "matter_opened" and matter_id is not None) or \
-                  (f.trigger == "next_interaction_with_person" and person_id is not None and person_id in f.target_ref) or \
-                  (matter_id is not None and matter_id in f.target_ref)
+                  (f.trigger == "next_interaction_with_person" and person_id is not None and person_id in toks) or \
+                  (matter_id is not None and matter_id in toks)
             if hit:
                 f.status = "surfaced"
                 out.append(f)
@@ -618,6 +650,98 @@ class World:
             if not 1 <= influence <= 5:
                 raise WorldError("影响力是 1–5")
             p.influence = influence
+        old_eff = p.quadrant
         if quadrant != p.quadrant_manual:
             self._log("edge_update", f"quadrant:{person_id}", {"before": p.quadrant_manual, "after": quadrant}, "手动设置象限")
         p.quadrant_manual, p.quadrant_set_at = quadrant, self.now()
+        self.apply_quadrant_change(person_id, old_eff, p.quadrant)  # 传 None = 取消手动，回到自动计算
+
+
+    # —— 承诺账本 ——
+    def add_commitment(self, from_p: str, to_p: str, content: str, *, evidence_obs_id: str, made_at: Optional[int] = None,
+                       due_at: Optional[int] = None, due_text: str = "") -> Commitment:
+        """from_p 欠 to_p。必须回指做出承诺的原话（R3）；到期会生成一条 watch 待办，在打开该人物时浮出。"""
+        if not any(o.id == evidence_obs_id for o in self.observations.values()):
+            raise WorldError("承诺必须回指一条已有的观察（原话）")
+        for p in (from_p, to_p):
+            if p not in self.persons:
+                raise WorldError(f"未知人物 {p}")
+        if from_p == to_p:
+            raise WorldError("承诺的双方不能是同一个人")
+        c = Commitment(self._nid("C", self.commitments), from_p, to_p, content,
+                       self.today_fn() if made_at is None else made_at, due_at, due_text, "open", evidence_obs_id)
+        self.commitments[c.id] = c
+        if due_at is not None or due_text:
+            who = to_p if from_p == SELF else from_p
+            self.followups.append(Followup(self._nid("F", {f.id: 1 for f in self.followups}), "watch",
+                                           f"commitment:{c.id}:{who}", "next_interaction_with_person",
+                                           f"承诺到期：{content}（{due_text or due_at}）"))
+        self._log("edge_update", f"commitment:{c.id}", {"new": f"{from_p}→{to_p}：{content}", "due": due_at}, "新增承诺")
+        return c
+
+    def close_commitment(self, cid: str, status: str, *, closing_obs_id: Optional[str] = None, reason: str = "") -> Commitment:
+        """兑现/违约必须有原话依据；取消必须写原因。系统不自动判断。"""
+        c = self.commitments[cid]
+        if c.status != "open":
+            raise WorldError(f"承诺已是 {c.status}，不能重复关闭")
+        if status not in ("fulfilled", "broken", "cancelled"):
+            raise WorldError("status 只能是 fulfilled / broken / cancelled")
+        if status in ("fulfilled", "broken") and not any(o.id == closing_obs_id for o in self.observations.values()):
+            raise WorldError("标记兑现或违约必须回指一条已有的观察（原话）")
+        if status == "cancelled" and not reason:
+            raise WorldError("取消承诺必须写原因")
+        c.status, c.closing_obs_id, c.closed_at = status, closing_obs_id, self.today_fn()
+        for f in self.followups:
+            if f.target_ref.startswith(f"commitment:{cid}:") and f.status != "done":
+                f.status = "done"
+        self._log("edge_update", f"commitment:{cid}", {"status": status}, reason or "更新承诺状态")
+        return c
+
+    def commitment_state(self, c: Commitment) -> str:
+        if c.status == "open" and c.due_at is not None and self.today_fn() > c.due_at:
+            return "overdue"
+        return c.status
+
+    def commitment_ledger(self, person_id: str) -> dict:
+        """个人页“承诺”：他欠我 / 我欠他。只列事实与状态，不汇总成“守信度”。"""
+        rows = lambda pred: [  # noqa: E731
+            {"id": c.id, "content": c.content, "due": c.due_text or c.due_at, "state": self.commitment_state(c),
+             "evidence_obs": c.evidence_obs_id, "closing_obs": c.closing_obs_id}
+            for c in self.commitments.values() if pred(c)]
+        return {"owes_me": rows(lambda c: c.from_person_id == person_id and c.to_person_id == SELF),
+                "i_owe": rows(lambda c: c.from_person_id == SELF and c.to_person_id == person_id),
+                "others": rows(lambda c: person_id in (c.from_person_id, c.to_person_id) and SELF not in (c.from_person_id, c.to_person_id))}
+
+
+    def apply_quadrant_change(self, pid: str, old: Optional[str], new: Optional[str]):
+        """迁移规则（3.10）：远 → 近：person 类规则保留，关系相关规则标 needs_review。其他方向只记修订，不动规则。"""
+        if old is None or new is None or old == new:
+            return None
+        detail = {"before": old, "after": new, "kept_person_rules": [], "needs_review": []}
+        if old.startswith("远") and new.startswith("近"):
+            for h in self.hypotheses.values():
+                if h.person_id != pid or h.status != "active":
+                    continue
+                if h.scope == "relation":
+                    h.status = "needs_review"
+                    detail["needs_review"].append(h.id)
+                else:
+                    detail["kept_person_rules"].append(h.id)
+            if detail["needs_review"]:
+                self.followups.append(Followup(self._nid("F", {f.id: 1 for f in self.followups}), "verify_role",
+                                               f"quadrant:{pid}", "next_interaction_with_person",
+                                               f"关系由远变近：复核 {len(detail['needs_review'])} 条关系类判断"))
+        return self._log("quadrant_migration", f"quadrant:{pid}", detail,
+                         f"象限 {old} → {new}" + ("；关系类规则标 needs_review" if detail["needs_review"] else ""))
+
+    # —— 区分场景的代价评估（3.7）——
+    def rate_scene(self, person_id: str, scene_name: str, kind: str, cost: float = 0) -> None:
+        """observe：观察信号，代价恒为 0（不必问对方）；ask：当面询问，会消耗关系，cost 由你评估（>0）。"""
+        if kind == "observe":
+            cost = 0
+        elif kind == "ask":
+            if not cost or cost <= 0:
+                raise WorldError("当面询问必须由你评估一个大于 0 的代价")
+        else:
+            raise WorldError("kind 只能是 observe 或 ask")
+        self.scene_ratings[(person_id, scene_name)] = (kind, cost)

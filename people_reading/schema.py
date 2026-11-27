@@ -73,6 +73,18 @@ def validate_extraction(d) -> list:
     for i, x in enumerate(hy):
         if not (isinstance(x, dict) and all(isinstance(x.get(k), str) and x[k].strip() for k in ("subject", "statement", "source_quote"))):
             errs.append(f"hypotheses[{i}] 需要非空的 subject/statement/source_quote")
+    for key, need in (("commitments", ("from", "to", "content", "source_quote")), ("commitment_updates", ("id", "status", "source_quote"))):
+        arr = d.get(key, [])
+        if not isinstance(arr, list):
+            errs.append(f"{key} 必须是数组")
+            continue
+        for i, x in enumerate(arr):
+            if not (isinstance(x, dict) and all(isinstance(x.get(k), str) and x[k].strip() for k in need)):
+                errs.append(f"{key}[{i}] 需要非空的 {'/'.join(need)}")
+            elif key == "commitment_updates" and x["status"] not in ("fulfilled", "broken"):
+                errs.append(f"{key}[{i}].status 只能是 fulfilled 或 broken")
+            elif key == "commitments" and x.get("due_text") is not None and not isinstance(x["due_text"], str):
+                errs.append(f"{key}[{i}].due_text 必须是字符串或 null")
     drafts = d.get("drafts")
     if not isinstance(drafts, list):
         return errs + ["drafts 必须是数组"]
@@ -109,4 +121,6 @@ relations: 用户明确说出的人际关系或某人在某议题里的作用，
 只记用户明确说的；不得由职务推断意愿或关系；限定于这件事的关系一律 scope=matter。
 planned_meeting: 用户提到即将发生的会谈 {"with":对方姓名,"when":时间描述}，否则 null
 hypotheses: 用户随口说出的看法（对某人将会怎样的预期）[{"subject":姓名,"statement":一句话,"source_quote":原话片段}]；只记用户说的，不要替用户补充
+commitments: 用户转述的明确承诺 [{"from":欠的人(姓名或"我"),"to":被欠的人,"content":承诺内容,"due_text":到期时间的原话描述或null,"source_quote":原话片段}]；只记对方明确说出口的承诺，不要把“可能”“看看”当成承诺
+commitment_updates: 用户说某项已记录的承诺兑现或没兑现 [{"id":提示里给出的承诺编号,"status":"fulfilled"|"broken","source_quote":原话片段}]，编号只能用提示里列出的
 同一行为被重复描述（如“连问三次”）只写一条。source_quote 必须是原文的连续片段，不得改写。"""

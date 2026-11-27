@@ -70,7 +70,7 @@ def judgment_card(w: World, hid: str, store=None, label_time: Callable[[int], st
     rivals = [r.name for rid, r in eng.rules.items() if rid != hid and r.behavior_key == h.behavior_key and h.behavior_key]
     pending = [f"替代解释：{n}" for n in rivals] + [f.text for f in w.followups if f.kind == "watch" and f.status != "done"]
     card = {"id": hid, "header": {"statement": h.statement, "by": by,
-                                  "note": "尚无互动支持" if no_support else "", "css": "user" if h.proposed_by == "user" else "model",
+                                  "note": ("关系已变，需复核" if h.status == "needs_review" else "尚无互动支持" if no_support else ""), "css": "user" if h.proposed_by == "user" else "model",
                                   "formal": h.formal},
             "rows": [actual, pre, rec_row], "badge": badge, "pending": pending, "actions": list(ACTIONS)}
     assert [r["label"] for r in card["rows"]] == list(ROWS)
