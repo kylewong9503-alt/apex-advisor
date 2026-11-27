@@ -26,6 +26,7 @@ from .llm import RemoteModel, make_model
 from .engine import EngineError
 from .premeeting import CONFIDENCE, RULE_P, PreMeeting, make_premise, profile
 from .settle_flow import SettlementSession
+from .world import SELF as SELF_ID
 from .privacy import AppLock, Locked, Redactor, TooManyAttempts
 from .shell import render_app
 from .theme import BRAND, mark_svg
@@ -93,6 +94,7 @@ class App:
         self.sess_hours: Optional[float] = None
         self.sess_review: Optional[dict] = None
         self.notice = ""  # 下一次渲染时给你看一次的提示（比如模型没能解析）
+        self.reading: Optional[dict] = None  # 刚确认记下之后的“解读 → 选择 → 留意”，走完才回到空白输入
         self.settle_pick: Optional[list] = None  # 同一场会有多个（行为，版本）要结算时，先让你选一项
         self.salt = secrets.token_bytes(16)  # 把提交绑定到所显示题目的标识：带盐哈希，不含任何原文
         self.lk: Optional[dict] = None  # 锁定预测进行中的选择（锁定前都可改，锁定后不可改）
@@ -126,6 +128,7 @@ class App:
         self.w, self.intake, self.pms, self.pm_failed = None, None, {}, set()
         self.sess, self.sess_hours, self.sess_review = None, None, None
         self.lk = None
+        self.reading = None
         self.settle_pick = None
         self.salt = secrets.token_bytes(16)
 
@@ -162,6 +165,86 @@ class App:
                                    act={"url": "/confirm_many", "fields": {"msg": str(mid)}}))
         return steps
 
+    # —— 记下之后：回执 + 解读（模型提出几种解释，你选，再决定怎么分清）——
+    def _start_reading(self, refs: list) -> None:
+        """refs = [(草稿, 确认后的 id)]。只在“这一轮确认的草稿里有关于某个人的观察”时给解读；其余只给一条回执。"""
+        from . import skillset as K
+        w, st = self._world(), self.lock.store
+        if self.sess is not None or self.lk is not None or not refs:
+            return
+        obs = [o for _, ref in refs for o in w.observations.values() if o.id == ref]
+        counts: dict = {}
+        for d, _ in refs:
+            lab = KIND_LABEL.get(d["proposed"].get("target_table") if d["proposed"].get("target_table") not in (None, "observation") else d["proposed"].get("kind"), "其他")
+            counts[lab] = counts.get(lab, 0) + 1
+        self.reading = {"counts": counts, "stage": "receipt", "items": None, "pid": None, "quote": "", "picked": None}
+        people = [o for o in obs if o.subject_person_id and o.subject_person_id != SELF_ID and not o.is_interpretation]
+        if not people:
+            return
+        pid = people[0].subject_person_id
+        text = " … ".join(o.content for o in people)
+        items = K.read_event(self.model, text, person_name=w.persons[pid].display_name)
+        if items:
+            self.reading.update(stage="view", items=items, pid=pid, quote=text)
+
+    def reading_steps(self) -> list:
+        r = self.reading
+        if r is None:
+            return []
+        n = lambda u: {"url": u, "fields": {}}  # noqa: E731
+        if r["stage"] == "view":
+            return [{"kind": "reading", "cue": "你刚记下的", "title": "先这样看：几种说得通的解释", "quote": r["quote"], "items": r["items"],
+                     "note": "这只是几种都说得通的解释，现在还分不出哪种更对；它们不算证据，也不会计入任何比较。", "act": n("/reading/next")}]
+        if r["stage"] == "pick":
+            opts = [(x["statement"], "model", "") for x in r["items"]] + [("说不准", "", "")]
+            return [ask("你觉得哪种更像？", opts, cue="凭直觉选，之后可以改", selected=None, act=n("/reading/pick"))]
+        if r["stage"] == "signal":
+            opts = [(x["signal"], "", "不用问对方，零代价") for x in r["items"]] + [("先放着", "", "")]
+            return [ask("想让我替你留意哪一个现象？", opts, cue="以后遇到时我会提醒你", selected=None, act=n("/reading/signal"))]
+        tail = "；".join(f"{v} 条{k}" for k, v in r["counts"].items())
+        extra = "。留意的现象已加入待办，下次再说到相关的人或事时会提醒你。" if r.get("watched") else "。"
+        return [{"kind": "result", "cue": "已归档", "title": f"已记下：{tail}", "big": "", "big_note": "",
+                 "note": "你可以随时用右上角的“记一句”继续记" + extra, "act": n("/reading/done")}]
+
+    def reading_next(self, expect: str, choice: str = "") -> None:
+        """expect：这个请求对应的步骤（view / pick / signal）；与当前步骤不一致就拒绝，不跳步。"""
+        r = self.reading
+        if r is None or r["stage"] != expect:
+            raise KeyError("reading")
+        st = r["stage"]
+        if st == "view":
+            r["stage"] = "pick"
+        elif st == "pick":
+            if not choice.isdigit() or int(choice) > len(r["items"]):
+                raise KeyError("pick")
+            i, w = int(choice), self._world()
+            if i < len(r["items"]):
+                for j, x in enumerate(r["items"]):  # 你选的记为你的判断；其余是模型提出的另一种可能
+                    w.add_hypothesis(r["pid"], x["statement"], proposed_by="user" if j == i else "model")
+                r["picked"] = i
+            else:
+                for x in r["items"]:
+                    w.add_hypothesis(r["pid"], x["statement"], proposed_by="model")
+            self.lock.store.sync_world(w)
+            r["stage"] = "signal"
+        elif st == "signal":
+            if not choice.isdigit() or int(choice) > len(r["items"]):
+                raise KeyError("signal")
+            i, w = int(choice), self._world()
+            if i < len(r["items"]):
+                from .world import Followup
+                w.followups.append(Followup(f"F{len(w.followups) + 1}", "watch", r["pid"], "when_relevant", r["items"][i]["signal"]))
+                r["watched"] = True
+                self.lock.store.sync_world(w)
+            r["stage"] = "done"
+        else:
+            raise KeyError("done")
+
+    def reading_done(self) -> None:
+        if self.reading is None or self.reading["stage"] not in ("receipt", "done"):
+            raise KeyError("done")
+        self.reading = None
+
     def confirm_many(self, msg: str, ids: str) -> None:
         store = self.lock.store
         group = [d for d in store.drafts(status="pending", conversation_id=self.CID) if str(d["message_id"]) == msg]
@@ -170,9 +253,14 @@ class App:
         keep = {i for i in ids.split(",") if i}
         if not keep <= {d["id"] for d in group}:
             raise KeyError("ids")  # 只能处理这一组里还在等你的草稿
+        refs = []
         for d in group:
-            (self.intake.confirm if d["id"] in keep else self.intake.reject)(d["id"])
+            if d["id"] in keep:
+                refs.append((d, self.intake.confirm(d["id"])))
+            else:
+                self.intake.reject(d["id"])
         store.sync_world(self._world())
+        self._start_reading(refs)
 
     def _has_judgment(self) -> bool:
         got = self._planned()
@@ -201,7 +289,7 @@ class App:
         store = self.lock.store
         w = self._world()
         rd = Redactor(w, "masked" if self.masked else "code")
-        steps = self.settle_steps() or self.lock_steps() or self.pending_steps()
+        steps = self.settle_steps() or self.lock_steps() or self.pending_steps() or self.reading_steps()
         if not steps and w.matters and not self._has_judgment():
             # 会前准备是“你的判断 vs 另一种可能”：你还没说出判断时不调用模型，先问你
             steps = [open_ask("你觉得他会先问什么？", cue=w.matters[list(w.matters)[-1]].title, act={"url": "/say", "fields": {}})]
@@ -503,9 +591,12 @@ class App:
         if not any(d["id"] == did and d["status"] == "pending" for d in store.drafts()):
             raise KeyError(did)
         if choice == "0":
-            self.intake.confirm(did)
-        else:
-            self.intake.reject(did)
+            d = next(x for x in store.drafts() if x["id"] == did)
+            ref = self.intake.confirm(did)
+            store.sync_world(self._world())
+            self._start_reading([(d, ref)])
+            return
+        self.intake.reject(did)
         store.sync_world(self._world())
 
     def act(self, mid: str) -> None:
@@ -663,6 +754,11 @@ def make_handler(app: App):
                         app.act(app.current_mid())
                     elif path == "/settle/start":
                         app.settle_start(app.current_mid())
+                    elif path in ("/reading/next", "/reading/pick", "/reading/signal"):
+                        app.reading_next({"/reading/next": "view", "/reading/pick": "pick", "/reading/signal": "signal"}[path],
+                                         (form.get("choice") or [""])[0])
+                    elif path == "/reading/done":
+                        app.reading_done()
                     elif path == "/lock/start":
                         app.lock_start(app.current_mid())
                     elif path == "/lock/next":

@@ -79,3 +79,6 @@ model = make_model()                  # 按 PR_PROVIDER 返回 LocalModel 或 Re
 
 ## 只有 iPad 时：GitHub Codespaces
 在 github.com 的仓库页（本分支）点 Code → Codespaces → Create，打开浏览器里的终端，运行 `bash deploy/codespaces.sh`；端口 8765 默认私有，只有你登录的 GitHub 账号能打开。模型密钥放在 GitHub 的 Codespaces secrets（PR_PROVIDER、PR_ALLOW_EXTERNAL、DEEPSEEK_API_KEY），不要写进文件。
+
+## 记下之后的“解读”（skillset.READ_EVENT）
+确认记下一件关于某个人的事后，不再回到空白输入：先给一条“先这样看”（模型提出的 2–3 种说得通的解释，每种挂原话里的依据；依据找不到、含原话没有的数字、性格标签、越界说法的都被丢弃，不足 2 条就不给解读，只给回执），再问“你觉得哪种更像”（你选的记为你的判断，其余是模型提出的另一种可能，都不进入比较），再问“想让我替你留意哪一个现象”（确认后加入待办），最后给一条归档回执。

@@ -178,7 +178,7 @@ textarea{width:100%;font:inherit;font-size:20px;line-height:1.7;padding:16px;bor
 .bn{position:fixed;top:0;left:0;right:0;z-index:5;background:var(--kin-soft);color:var(--kin);font-size:12px;line-height:20px;text-align:center;padding:2px 8px}
 .srs{border-bottom:1px solid var(--line);max-width:620px}.sr{display:flex;gap:20px;padding:12px 0;border-top:1px solid var(--line);font-size:16px;line-height:1.6}.sr span:first-child{width:56px;flex:none;color:var(--ink-muted)}
 .nt{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:6;max-width:min(560px,92vw);background:var(--ink);color:var(--surface);padding:12px 18px;border-radius:var(--radius-md);font-size:14px;line-height:22px}
-.line{font:600 clamp(24px,3vw,44px)/1.45 var(--font-sans);margin:0 0 28px}
+.qt{margin:0 0 20px;padding:0 0 0 16px;border-left:2px solid var(--line-strong);color:var(--ink-muted);font-size:15px;line-height:26px}.rd{list-style:none;margin:0;padding:0}.rd li{display:flex;gap:12px;align-items:flex-start;padding:14px 0;border-top:1px solid var(--line);font-size:18px;line-height:1.5}.rd li:last-child{border-bottom:1px solid var(--line)}.rd small{display:block;margin-top:2px;font-size:13px;color:var(--ink-muted)}.rd .mk-model{margin-top:9px}\n.line{font:600 clamp(24px,3vw,44px)/1.45 var(--font-sans);margin:0 0 28px}
 .why{margin:0;font-size:17px;line-height:1.9;color:var(--ink-muted);max-width:560px}
 .big{font:600 clamp(56px,7vw,88px)/1 var(--font-sans);color:var(--ai);font-variant-numeric:tabular-nums}
 .bign{display:flex;align-items:baseline;gap:16px;margin-bottom:12px;flex-wrap:wrap}.bign span+span{font-size:16px;color:var(--ink-muted);line-height:1.7;max-width:480px}
@@ -251,6 +251,12 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
                 + "</span></button>" for it in s["items"])
             core = f"{cue}<h1>{e(s['q'])}</h1><div class='opts' role='group' aria-label='选项'>{os_}</div>"
             ft = f"<div class='ft'><span class='mut'>取消勾选的不记</span><button type='button' class='btn p' data-next{actattr(s.get('act'))}>记下所选</button></div>"
+        elif s["kind"] == "reading":
+            lis = "".join(f"<li><i class='mk-model' aria-hidden='true'></i><span>{e(x['statement'])}<small>{e(x['evidence'])}</small></span></li>"
+                          for x in s["items"])
+            core = (f"{cue}<h1>{e(s['title'])}</h1><blockquote class='qt'>{e(s['quote'])}</blockquote>"
+                    f"<ul class='rd'>{lis}</ul><p class='why' style='margin-top:16px;font-size:14px'>{E(s['note'])}</p>")
+            ft = f"<div class='ft'><span></span><button type='button' class='btn p'{actattr(s.get('act'))}>继续</button></div>"
         elif s["kind"] == "open":
             core = f"{cue}<h1>{e(s['q'])}</h1><textarea rows='5' aria-label='你的回答' placeholder='按你记得的说就行，原话越接近越好'></textarea>"
             ft = f"<div class='ft'><span></span><button type='button' class='btn p' data-next{actattr(s.get('act'))}>提交</button></div>"

@@ -409,3 +409,49 @@ def advise(model, w: World, person_id: str, store=None) -> Optional[dict]:
     return {"items": keep, "dropped": dropped, "skill": ADVICE.id} if keep else None
 
 
+
+
+# ───────────────────────── 解读：记下一件事之后，给出几种都说得通的解释（⑦ 事件解读）─────────────────────────
+READ_EVENT = SkillVersion(
+    "事件解读", 1, "你记下一件事后，给出 2–3 种都说得通的解释，每种附上原话里的依据和以后能分清它的现象。",
+    applicable_questions=("怎么看这件事", "怎么理解"), inputs=("你刚确认记下的原话", "相关人物"),
+    steps=("读原话", "提出互不相同的解释，每个挂原话里的依据", "给出能分清它们的、不必问对方的观察"),
+    output_format="解释 + 原话依据 + 分清它的现象；解释本身不是观察，不计入任何比较", allowed_actions=("假设草稿（模型提出）", "watch 待办（你确认）"))
+BUILTIN[READ_EVENT.skill] = READ_EVENT
+
+SYSTEM_READ = """用户刚记下一件事。给出 2–3 种都说得通、而且互相不同的解释，只输出 JSON：
+{"explanations":[{"statement": 一句话的解释（不推断性格或情绪，不下“他就是……”的结论，不出现原话里没有的人名和数字）,
+                  "evidence": 原话里支持它的一段（逐字摘抄）,
+                  "signal": 以后能观察到、能分清它与其他解释的一个具体现象（不必问对方）}]}"""
+
+
+def validate_read(d) -> list:
+    e = d.get("explanations") if isinstance(d, dict) else None
+    if not isinstance(e, list) or not 2 <= len(e) <= 3:
+        return ["explanations 必须是 2–3 项"]
+    return [f"explanations[{i}] 需要 statement、evidence、signal" for i, x in enumerate(e)
+            if not (isinstance(x, dict) and _s(x.get("statement")) and _s(x.get("evidence")) and _s(x.get("signal")))]
+
+
+def read_event(model, text: str, *, person_name: str = "") -> Optional[list]:
+    """返回 [{statement, evidence, signal}]；模型不可用、输出不合格、或可用的少于 2 条时返回 None（不编造）。
+    每条都要过程序校验：依据必须能在原话里逐字找到；不得出现原话里没有的数字；不得用禁用词和越界说法；解释不能重复。"""
+    if model is None:
+        return None
+    try:
+        d = model.structured(SYSTEM_READ, f"当事人：{person_name}\n用户原话：{text}", validate_read)
+    except Exception:
+        return None
+    nums, out, seen = set(NUM.findall(text)), [], set()
+    for x in d["explanations"]:
+        s, ev, sg = x["statement"].strip(), x["evidence"].strip(), x["signal"].strip()
+        blob = s + sg
+        if find_span(text, ev) is None:
+            continue  # 依据在原话里找不到：丢
+        if any(n not in nums for n in NUM.findall(blob)) or not _clean(blob) or any(o in blob for o in OVERCLAIMS):
+            continue
+        if any(w in blob for w in ("性格", "天生", "就是针对", "一贯如此")) or s in seen:
+            continue
+        seen.add(s)
+        out.append({"statement": s, "evidence": text[find_span(text, ev)[0]:find_span(text, ev)[1]], "signal": sg})
+    return out if len(out) >= 2 else None

@@ -496,3 +496,86 @@ def test_every_button_with_an_action_renders_its_attributes():
     for u in ("/say", "/x", "/y", "/z", "/c", "/r", "/d"):
         assert f"data-act='{u}'" in page, u
     assert "{actattr" not in page  # 没有未展开的模板片段
+
+
+# ───────── 记下之后：回执 + 解读 → 选择 → 留意（不再停在“记下这一条”）─────────
+READ_TEXT = "我的老板 F 突然跟我要 A 和 B 的合作"
+READ_DRAFT = {"kind": "behavior", "reporter": "我", "subject": "F", "content": "F 要合作", "is_interpretation": False,
+              "source_quote": "F 突然跟我要 A 和 B 的合作", "behavior_key": None, "occurred": None}
+READ_OUT = {"explanations": [
+    {"statement": "她在为某个汇报找素材", "evidence": "突然跟我要", "signal": "接下来一周里她是否在会上引用这两家的情况"},
+    {"statement": "她想试探我手上有没有这两家的资源", "evidence": "要 A 和 B 的合作", "signal": "她之后是否追问我和这两家的关系"},
+    {"statement": "她编造的依据", "evidence": "原话里根本没有这句", "signal": "无"}]}
+
+
+def _reading_server(tmp_path, outs):
+    from people_reading.llm import ScriptedModel
+    from people_reading.tests import test_step4 as T4
+    from people_reading.tests.test_step2 import extraction
+    w, st, it = T4.env(tmp_path, [])
+    path = st.path; st.close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel([extraction(drafts=[READ_DRAFT])] + outs))
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    return s
+
+
+def test_after_confirming_a_record_the_flow_continues_with_a_reading(tmp_path):
+    s = _reading_server(tmp_path, [READ_OUT])
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote(READ_TEXT), headers=ck)
+        did = s.app.lock.store.drafts(status="pending")[0]["id"]
+        assert req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)[0] == 303
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "几种说得通的解释" in body and "她在为某个汇报找素材" in body and "她想试探我手上" in body
+        assert "编造的依据" not in body  # 依据在原话里找不到的解释被丢弃
+        assert req(s, "POST", "/reading/pick", "choice=0", headers=ck)[0] == 409  # 不能跳步
+        assert req(s, "POST", "/reading/next", headers=ck)[0] == 303
+        assert "你觉得哪种更像" in req(s, "GET", "/", headers=ck)[2]
+        assert req(s, "POST", "/reading/pick", "choice=9", headers=ck)[0] == 409
+        assert req(s, "POST", "/reading/signal", "choice=0", headers=ck)[0] == 409  # 也不能提前到后面的步骤
+        assert req(s, "POST", "/reading/pick", "choice=1", headers=ck)[0] == 303
+        hy = [(h.statement, h.proposed_by) for h in s.app.w.hypotheses.values() if h.person_id == "F"]
+        assert ("她想试探我手上有没有这两家的资源", "user") in hy and ("她在为某个汇报找素材", "model") in hy
+        assert not any(h.formal for h in s.app.w.hypotheses.values() if h.statement.startswith("她"))  # 解释不进入比较
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "想让我替你留意哪一个现象" in body and "不用问对方，零代价" in body
+        assert req(s, "POST", "/reading/signal", "choice=0", headers=ck)[0] == 303
+        assert any(f.kind == "watch" and "会上引用" in f.text for f in s.app.w.followups)
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "已记下" in body and "1 条你看到的" in body
+        assert req(s, "POST", "/reading/done", headers=ck)[0] == 303 and s.app.reading is None
+        after = req(s, "GET", "/", headers=ck)[2].split("<script>")[0]
+        assert "已记下" not in after and "role='alert'" not in after  # 走完了，回到下一件事
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_without_usable_reading_you_still_get_a_receipt_not_a_dead_end(tmp_path):
+    s = _reading_server(tmp_path, ["不是 JSON", "还是不是", "仍然不是"])  # 模型给不出解读
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote(READ_TEXT), headers=ck)
+        did = s.app.lock.store.drafts(status="pending")[0]["id"]
+        req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "已记下" in body and "几种说得通的解释" not in body  # 没有编造解释，但有回执
+        assert req(s, "POST", "/reading/done", headers=ck)[0] == 303
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_read_event_validation():
+    from people_reading.llm import ScriptedModel
+    from people_reading.skillset import read_event
+    text = "老板 F 突然跟我要 A 和 B 的合作"
+    ok = lambda s, e, g: {"statement": s, "evidence": e, "signal": g}  # noqa: E731
+    two = [ok("她在找素材", "突然跟我要", "之后是否引用"), ok("她在试探资源", "A 和 B 的合作", "之后是否追问")]
+    assert len(read_event(ScriptedModel([{"explanations": two}]), text)) == 2
+    assert read_event(None, text) is None
+    for bad in (ok("她天生就爱试探", "突然跟我要", "x"),            # 性格标签
+                ok("她已经问了 17 次", "突然跟我要", "x"),            # 原话里没有的数字
+                ok("她答应引荐", "突然跟我要", "x"),                  # 越界说法
+                ok("她想要资源", "原话里没有的依据", "x")):           # 依据找不到
+        assert read_event(ScriptedModel([{"explanations": [two[0], bad]}]), text) is None  # 剩一条就不给（不足 2 条）
+    assert read_event(ScriptedModel([{"explanations": [two[0], dict(two[0])]}]), text) is None  # 重复的解释只算一条
