@@ -320,7 +320,7 @@ class App:
                 if self._settleable():
                     btns.append({"label": "会后", "act": {"url": "/settle/start", "fields": {}, "reload": True}})
                 steps[-1]["buttons"] = btns
-        steps = steps or [self._say_step("今天想记一件什么事？", "直接说；点一下标签就告诉我说的是谁", rd)]
+        steps = steps or [self._say_step("今天想记一件什么事？", "直接说；用 @ 选谁、# 选场合", rd)]
         return render_flow(steps, rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner(), notice=self._take_notice(),
                            say_href="" if steps[0]["kind"] == "open" else "/say")
 
@@ -384,7 +384,7 @@ class App:
     def say_html(self) -> str:
         """随时记一句：不论现在在哪个流程里。"""
         rd = Redactor(self._world(), "masked" if self.masked else "code")
-        step = self._say_step("想记一件什么事？", "直接说；点一下标签就告诉我说的是谁", rd)
+        step = self._say_step("想记一件什么事？", "直接说；用 @ 选谁、# 选场合", rd)
         return render_flow([step], rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner())
 
     def library_html(self) -> str:

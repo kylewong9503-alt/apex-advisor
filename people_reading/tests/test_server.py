@@ -597,7 +597,7 @@ def _who_server(tmp_path, outs):
 
 def _chip_toks(body):
     import re
-    return re.findall(r"<button type='button' class='chip' aria-pressed='false' data-tok='([^']*)'>([^<]*)</button>", body)
+    return re.findall(r"<button type='button' class='mi' role='option' aria-selected='false' data-tok='([^']*)'>([^<]*)</button>", body)
 
 
 def test_people_chips_ordered_by_frequency_and_masked_in_private_view(tmp_path):
@@ -607,7 +607,7 @@ def test_people_chips_ordered_by_frequency_and_masked_in_private_view(tmp_path):
         chips = _chip_toks(req(s, "GET", "/", headers=ck)[2])
         labels = [l for _, l in chips]
         assert labels.index("M") < labels.index("F")  # 被记得多的在前
-        assert "＋ 新的人" in req(s, "GET", "/", headers=ck)[2]
+        assert "＋ 新的人" in req(s, "GET", "/", headers=ck)[2] and "@ 谁" in req(s, "GET", "/", headers=ck)[2]
         req(s, "POST", "/mask", headers=ck)
         body = req(s, "GET", "/", headers=ck)[2]
         assert [l for _, l in _chip_toks(body)] and all(l.startswith("●") for _, l in _chip_toks(body))  # 遮挡时标签也遮挡
@@ -674,7 +674,7 @@ const b=await chromium.launch();const p=await b.newPage({viewport:{width:390,hei
 p.on('pageerror',e=>out.errors.push(e.message));p.on('console',m=>{if(m.type()==='error')out.errors.push(m.text())});
 p.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/say'))out.posts.push(r.postData())});
 await p.goto('http://127.0.0.1:'+port+'/unlock');await p.fill('input[name=passphrase]',pw);await p.click('button[type=submit]');await p.waitForURL('**/');
-await p.click('.step.on .chip[data-new]');out.inputShown=await p.evaluate(()=>!document.querySelector('.step.on .newname').hidden);
+await p.click('.step.on .tb[data-menu=who]');await p.click('.step.on .mi[data-new]');out.inputShown=await p.evaluate(()=>!document.querySelector('.step.on .newname').hidden);
 await p.fill('.step.on .newname','Judy');await p.fill('textarea','老板突然跟我要合作');
 await p.click('.step.on button.btn.p');await p.waitForTimeout(1500);console.log(JSON.stringify(out));await b.close()})();
 """
@@ -706,7 +706,7 @@ def test_real_browser_new_person_tag_is_submitted(tmp_path):
 # ───────── 场景标签：筛选和分类用，不影响分析 ─────────
 def _scene_toks(body):
     import re
-    return dict((l, t) for t, l in re.findall(r"class='chip scn' aria-pressed='false' data-stok='([^']*)'>([^<]*)</button>", body))
+    return dict((l, t) for t, l in re.findall(r"role='option' aria-selected='false' data-stok='([^']*)'>([^<]*)</button>", body))
 
 
 def test_scene_tags_are_attached_to_the_interaction_and_persist(tmp_path):
@@ -766,7 +766,7 @@ def test_scene_labels_masked_and_profile_shows_and_filters_by_scene(tmp_path):
             for dr in s.app.lock.store.drafts(status="pending"):
                 s.app.intake.confirm(dr["id"])
         lib = req(s, "GET", "/library", headers=ck)[2].split("<script>")[0]
-        assert "class='tag'>开会<" in lib and "class='tag'>邮件/消息<" in lib and "data-sf=" in lib
+        assert "class='tag'>#开会<" in lib and "class='tag'>#邮件/消息<" in lib and "data-sf=" in lib
         import re
         assert re.search(r"<li data-scenes='\d'>", lib)  # 属性里只有序号
         req(s, "POST", "/mask", headers=ck)
@@ -784,9 +784,11 @@ const b=await chromium.launch();const p=await b.newPage({viewport:{width:390,hei
 p.on('pageerror',e=>out.errors.push(e.message));p.on('console',m=>{if(m.type()==='error')out.errors.push(m.text())});
 p.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/say'))out.posts.push(r.postData())});
 await p.goto('http://127.0.0.1:'+port+'/unlock');await p.fill('input[name=passphrase]',pw);await p.click('button[type=submit]');await p.waitForURL('**/');
-out.chipH=await p.evaluate(()=>[document.querySelector('.step.on .chip:not(.scn)').getBoundingClientRect().height,document.querySelector('.step.on .chip.scn').getBoundingClientRect().height]);
-await p.click('.step.on .chip.scn >> nth=0');await p.click('.step.on .chip.scn >> nth=2');
-await p.click('.step.on .newscn');out.inputShown=await p.evaluate(()=>!document.querySelector('.step.on .newscene').hidden);
+await p.click('.step.on .tb[data-menu=where]');
+out.heights=await p.evaluate(()=>[...document.querySelectorAll('.step.on .menu .mi')].filter(m=>m.offsetParent).map(m=>Math.round(m.getBoundingClientRect().height)));
+await p.click('.step.on .mi[data-stok] >> nth=0');await p.click('.step.on .mi[data-stok] >> nth=2');
+out.tokens=await p.evaluate(()=>[...document.querySelectorAll('.step.on .tk')].map(x=>x.textContent));
+await p.click('.step.on .mi[data-newscn]');out.inputShown=await p.evaluate(()=>!document.querySelector('.step.on .newscene').hidden);
 await p.fill('.step.on .newscene','团建');await p.fill('textarea','F 在团建上追问负责人');await p.click('.step.on button.btn.p');await p.waitForTimeout(1500);
 console.log(JSON.stringify(out));await b.close()})();
 """
@@ -808,7 +810,8 @@ def test_real_browser_scene_tags_are_small_and_submitted(tmp_path):
         import json as _j
         out = _j.loads(r.stdout.strip().splitlines()[-1])
         assert out["errors"] == [] and out["inputShown"] is True
-        assert out["chipH"][0] <= 32 and out["chipH"][1] <= 28  # 标签都做得很小
+        assert len(set(out["heights"])) == 1 and out["heights"][0] <= 44  # 所有选项等高，不再大小不一
+        assert out["tokens"] == ["#开会 ×", "#汇报 ×"] or [x.replace(" ×", "") for x in out["tokens"]] == ["#开会", "#汇报"], out["tokens"]
         post = out["posts"][0]
         assert "newscene=" in post and post.count("scenes=") >= 1, post
         dr = s.app.lock.store.drafts(status="pending")[0]
@@ -821,5 +824,5 @@ def test_open_step_is_a_composer_with_disabled_send_until_text():
     from people_reading.flow import open_ask, render_flow
     page = render_flow([open_ask("q", act={"url": "/say", "fields": {}}, people=[("t1", "F")], scenes=[("s1", "开会")])])
     assert "class='composer'" in page and "class='btn p send'" in page and " disabled>" in page
-    assert page.index("class='rows'") < page.index("class='composer'")  # 标签在输入框上方
-    assert "data-tok='t1'" in page and "data-stok='s1'" in page and "{actattr" not in page
+    assert page.index("class='menu who'") < page.index("class='composer'")  # 选择菜单在输入框上方，输入框里有 @ 谁 / # 场合
+    assert "data-tok='t1'" in page and "data-stok='s1'" in page and "{actattr" not in page and "class='chip" not in page

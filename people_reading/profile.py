@@ -138,13 +138,13 @@ def render_html(pf: dict, rd=None) -> str:
     tl = []
     for t in pf["timeline"]:
         idx = ",".join(str(scene_names.index(s)) for s in t.get("scenes", []))  # 属性里只放序号，不放场景名（遮挡时不泄露）
-        tags = "".join(f" <span class='tag'>{e(s)}</span>" for s in t.get("scenes", []))
+        tags = "".join(f" <span class='tag'>#{e(s)}</span>" for s in t.get("scenes", []))
         for o in t["observations"]:
             q = "；".join(o["quotes"])
             tl.append((idx, e(f"{t['day_label']} {t['label']}｜{o['mode']}｜{o['reporter']}：{o['content']}") + tags +
                        (" <span class='mut'>[解读]</span>" if o["interpretation"] else "") + f"<br><span class='mut' data-evidence='{e(q)}'>原话：{e(q)}</span>"))
-    bar = ("<div class='chips sfilter' role='group' aria-label='按场景筛选'>" + "".join(
-        f"<button type='button' class='chip scn' aria-pressed='false' data-sf='{i}'>{e(n)}</button>" for i, n in enumerate(scene_names)) + "</div>") if scene_names else ""
+    bar = ("<div class='sfilter' role='group' aria-label='按场景筛选'>" + "".join(
+        f"<button type='button' class='sfb' aria-pressed='false' data-sf='{i}'>#{e(n)}</button>" for i, n in enumerate(scene_names)) + "</div>") if scene_names else ""
     lst = ("<ul>" + "".join(f"<li data-scenes='{ix}'>{x}</li>" for ix, x in tl) + "</ul>") if tl else "<p class='mut'>暂无</p>"
     h.append("<h3>互动时间线</h3>" + bar + lst)
     h.append("<h3>预测复盘与修订</h3>" + li([e(f"#{x['id']} {x['kind']}｜{x['subject']}｜{x['reason']}") for x in pf["revisions"]]))
