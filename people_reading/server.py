@@ -178,14 +178,24 @@ class App:
             lab = KIND_LABEL.get(d["proposed"].get("target_table") if d["proposed"].get("target_table") not in (None, "observation") else d["proposed"].get("kind"), "其他")
             counts[lab] = counts.get(lab, 0) + 1
         self.reading = {"counts": counts, "stage": "receipt", "items": None, "pid": None, "quote": "", "picked": None}
-        people = [o for o in obs if o.subject_person_id and o.subject_person_id != SELF_ID and not o.is_interpretation]
-        if not people:
-            return
-        pid = people[0].subject_person_id
-        text = " … ".join(o.content for o in people)
-        items = K.read_event(self.model, text, person_name=w.persons[pid].display_name)
-        if items:
-            self.reading.update(stage="view", items=items, pid=pid, quote=text)
+        by_person: dict = {}
+        for o in obs:  # 按观察的主体分组：每个人单独读，不把几个人的话拼在一起
+            if o.subject_person_id and o.subject_person_id != SELF_ID and not o.is_interpretation:
+                by_person.setdefault(o.subject_person_id, []).append(o.content)
+        self.reading["queue"] = [(pid, " … ".join(cs)) for pid, cs in by_person.items()]
+        self._load_next_reading()
+
+    def _load_next_reading(self) -> bool:
+        """取队列里下一个能读出东西的人；都读完（或模型给不出）返回 False。"""
+        from . import skillset as K
+        r, w = self.reading, self._world()
+        while r.get("queue"):
+            pid, text = r["queue"].pop(0)
+            items = K.read_event(self.model, text, person_name=w.persons[pid].display_name)
+            if items:
+                r.update(stage="view", items=items, pid=pid, quote=text, picked=None)
+                return True
+        return False
 
     def reading_steps(self) -> list:
         r = self.reading
@@ -236,7 +246,7 @@ class App:
                 w.followups.append(Followup(f"F{len(w.followups) + 1}", "watch", r["pid"], "when_relevant", r["items"][i]["signal"]))
                 r["watched"] = True
                 self.lock.store.sync_world(w)
-            r["stage"] = "done"
+            r["stage"] = "view" if self._load_next_reading() else "done"
         else:
             raise KeyError("done")
 
@@ -289,7 +299,7 @@ class App:
         store = self.lock.store
         w = self._world()
         rd = Redactor(w, "masked" if self.masked else "code")
-        steps = self.settle_steps() or self.lock_steps() or self.pending_steps() or self.reading_steps()
+        steps = self.settle_steps() or self.lock_steps() or self.clarify_steps() or self.pending_steps() or self.reading_steps()
         if not steps and w.matters and not self._has_judgment():
             # 会前准备是“你的判断 vs 另一种可能”：你还没说出判断时不调用模型，先问你
             steps = [open_ask("你觉得他会先问什么？", cue=w.matters[list(w.matters)[-1]].title, act={"url": "/say", "fields": {}})]
@@ -334,21 +344,30 @@ class App:
 
     def _settleable(self) -> bool:
         """只有计划会谈上有锁定的预测，才出现“会后”：否则报告无法结算。"""
-        got = self._planned()
-        if got is None or got[0] not in self._world().engine.opps:
-            return False
         return bool(self._groups())
 
     def _groups(self) -> list:
         """这场会上待结算的（行为，版本）组。"""
-        got = self._planned()
-        if got is None or got[0] not in self._world().engine.opps:
+        got = self._settle_target()
+        if got is None:
             return []
         try:
             ps = SettlementSession(self.intake, self.current_mid(), got[0], None).matched()
         except Exception:
             return []
         return sorted({(p.pre.behavior_key, p.pre.def_version) for p in ps})
+
+    def _settle_target(self):
+        """还有待结算预测的那场会谈：先结算的那一组把会谈标成 occurred 之后，剩下的组仍要能续上，所以不能只看 planned。"""
+        w = self._world()
+        for iid, x in reversed(list(w.interactions.items())):
+            if x.get("with") and iid in w.engine.opps:
+                try:
+                    if SettlementSession(self.intake, self.current_mid(), iid, None).matched():
+                        return iid, x
+                except Exception:
+                    continue
+        return None
 
     def _planned(self):
         w = self._world()
@@ -410,7 +429,7 @@ class App:
         self.sess, self.sess_hours, self.sess_review = None, None, None
 
     def settle_start(self, mid: str) -> None:
-        got = self._planned()
+        got = self._settle_target()
         if got is None or mid not in self._world().matters or not self._settleable():
             raise KeyError(mid)
         groups = self._groups()
@@ -421,7 +440,7 @@ class App:
             self.settle_pick = groups  # 多组：先选，不替你选
 
     def _open_session(self, group) -> None:
-        iid, x = self._planned()
+        iid, x = self._settle_target()
         self.sess = SettlementSession(self.intake, self.current_mid(), iid, self.model, x.get("label", ""),
                                       behavior_key=group[0], def_version=group[1])
         self.settle_pick = None
@@ -574,9 +593,22 @@ class App:
         self.lk = None
 
     # —— 写操作（每个都先确认已解锁；落库后 sync_world）——
-    def say(self, text: str) -> None:
+    def clarify_steps(self) -> list:
+        """模型上一轮留下的追问：显式呈现，可以回答也可以跳过；只有这里的回答才会被当成对它的回答。"""
+        p = self.lock.store.get_pending(self.CID)
+        if not p or not p.get("question"):
+            return []
+        return [open_ask(p["question"], cue="补充一下（可以跳过）", act={"url": "/say", "fields": {"answer": "1"}},
+                         skip={"url": "/clarify/skip", "fields": {}})]
+
+    def clarify_skip(self) -> None:
+        self.lock.store.set_pending(self.CID, None)
+
+    def say(self, text: str, answering: bool = False) -> None:
         text = text.strip()
         if text and self.intake is not None:
+            if not answering:  # 独立的“记一句”不是回答：不续接上一个追问，也不并进同一个互动
+                self.lock.store.set_pending(self.CID, None)
             r = self.intake.handle(self.CID, text)
             self.lock.store.sync_world(self._world())
             if r.fallback:
@@ -745,7 +777,9 @@ def make_handler(app: App):
             try:
                 with app.mutex:
                     if path == "/say":
-                        app.say((form.get("text") or [""])[0][:4000])
+                        app.say((form.get("text") or [""])[0][:4000], answering=(form.get("answer") or [""])[0] == "1")
+                    elif path == "/clarify/skip":
+                        app.clarify_skip()
                     elif path == "/confirm_many":
                         app.confirm_many((form.get("msg") or [""])[0], (form.get("ids") or [""])[0])
                     elif path == "/confirm":

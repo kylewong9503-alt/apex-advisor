@@ -794,3 +794,139 @@ def test_r5_settle_refuses_before_writing_when_other_settled_prediction_is_tampe
     with pytest.raises(EngineError):
         e.settle_prediction("Q", {}, opp_id="O")
     assert e.preds["Q"].st.status == "locked"  # 没有被标为 settled，之后修好还能正常结算
+
+
+# ───────── 第 6 轮复审（99a737a）─────────
+def _two_intakes(tmp_path, outs):
+    w, st, it = T.env(tmp_path, outs)
+    return w, st, it
+
+
+def test_r6_new_interaction_ids_survive_reopening(tmp_path):
+    from people_reading.tests.test_step2 import extraction
+    d1 = {**T.REPORT_DRAFTS[0], "source_quote": "他先问专家具体要解决哪个问题"}
+    d2 = {**T.REPORT_DRAFTS[0], "content": "另一场", "source_quote": "另一场会上他先问预算"}
+    w, st, it = T.env(tmp_path, [extraction(drafts=[d1])])
+    it.confirm_all(it.handle("c1", "他先问专家具体要解决哪个问题").draft_ids and "c1")
+    first = {o.interaction_id for o in w.observations.values()}
+    it2 = Intake(st, w, ScriptedModel([extraction(drafts=[d2])]))  # 上锁再解锁：Intake 重建，序号从零开始
+    it2.adopt_world()
+    it2.confirm_all(it2.handle("c1", "另一场会上他先问预算").draft_ids and "c1")
+    second = {o.interaction_id for o in w.observations.values()} - first
+    assert second and not (second & first)  # 两场独立记录不能被并进同一个互动
+
+
+def test_r6_batch_with_two_people_is_read_per_person(tmp_path):
+    import threading
+    from people_reading.tests.test_server import READ_OUT, login, req, serve
+    from people_reading.tests.test_step2 import extraction
+    from urllib.parse import quote
+    dF = {**T.REPORT_DRAFTS[0], "subject": "F", "content": "F 发邮件", "source_quote": "F 发了邮件"}
+    dM = {**T.REPORT_DRAFTS[0], "subject": "M", "content": "M 拒绝预算", "source_quote": "M 拒绝了预算"}
+    readF = {"explanations": [{"statement": "F 在走流程", "evidence": "发了邮件", "signal": "他之后是否跟进"},
+                              {"statement": "F 在留痕", "evidence": "F 发了邮件", "signal": "他是否抄送别人"}]}
+    readM = {"explanations": [{"statement": "M 预算紧", "evidence": "拒绝了预算", "signal": "他是否批其他项目"},
+                              {"statement": "M 在拖延", "evidence": "M 拒绝了预算", "signal": "他是否给出时间"}]}
+    w, st, it = T.env(tmp_path, [])
+    path = st.path; st.close()
+    model = ScriptedModel([extraction(drafts=[dF, dM]), readF, readM])
+    s = serve(path, "127.0.0.1", 0, model=model)
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote("F 发了邮件。M 拒绝了预算。"), headers=ck)
+        pend = s.app.lock.store.drafts(status="pending")
+        msg = pend[0]["message_id"]
+        req(s, "POST", "/confirm_many", f"msg={msg}&ids={','.join(d['id'] for d in pend)}", headers=ck)
+        assert "F 发了邮件" in model.prompts[1] and "M 拒绝了预算" not in model.prompts[1]  # 一次只读一个人
+        for _ in range(2):  # 两个人各走一遍：看 → 选第 2 个 → 留意第 1 个
+            req(s, "POST", "/reading/next", headers=ck); req(s, "POST", "/reading/pick", "choice=1", headers=ck)
+            req(s, "POST", "/reading/signal", "choice=0", headers=ck)
+        hy = {(h.person_id, h.statement, h.proposed_by) for h in s.app.w.hypotheses.values()}
+        assert ("F", "F 在留痕", "user") in hy and ("M", "M 在拖延", "user") in hy
+        assert not any(p == "M" and "F " in st_ for p, st_, _ in hy) and not any(p == "F" and "M " in st_ for p, st_, _ in hy)
+        wt = {f.target_ref: f.text for f in s.app.w.followups if f.kind == "watch"}
+        assert "跟进" in wt["F"] and "批其他项目" in wt["M"]  # 各自的留意项挂在各自名下
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_r6_second_group_stays_reachable_after_first_is_settled(tmp_path):
+    import threading
+    from people_reading import scenarios as S
+    from people_reading.engine import make_rule
+    from people_reading.tests.test_server import act_fields, login, req, serve
+    w, st, it, pm, mid, iid = T.c2(tmp_path)
+    it.model.outputs = [T.PREP_OUT]
+    pm.prepare(); pm.confirm_categories(); pm.formalize(T.DIST_H)
+    pm.lock_prediction(T.DIST_P, None)
+    e = w.engine
+    e.define_behavior(S.ASK)
+    e.lock_prediction(id="P-9", person_id="F", matter_id=mid, behavior_key="ask_owner", bind_mode="condition_match",
+                      conditions={"with": "F"}, rules=[make_rule("RA", "总是追问", "ask_owner", {"kind": "const_binary", "p": 0.8}),
+                                                       make_rule("RB", "很少追问", "ask_owner", {"kind": "const_binary", "p": 0.2})],
+                      prob=0.6, settlement_criterion="是否追问负责人")
+    st.sync_world(w); path = st.path; st.close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel([T.report_out(T.REPORT_DRAFTS), T.proposal()]))
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    try:
+        ck = login(s)
+        req(s, "POST", "/settle/start", headers=ck)
+        qt = act_fields(req(s, "GET", "/", headers=ck)[2])["q"]
+        groups = s.app._groups()
+        req(s, "POST", "/settle/pick", f"q={qt}&choice={[g[0] for g in groups].index('first_q_topic')}", headers=ck)
+        req(s, "POST", "/settle/when", "choice=0", headers=ck)
+        req(s, "POST", "/settle/report", "text=" + __import__("urllib.parse", fromlist=["x"]).quote(T.REPORT), headers=ck)
+        cats = list(s.app.sess._behavior_for()[0].categories)
+        assert req(s, "POST", "/settle/outcome", f"choice={cats.index('专家需求')}", headers=ck)[0] == 303
+        s.app.sess.state = "settled"
+        req(s, "POST", "/settle/done", headers=ck)
+        assert s.app.w.engine.preds["P-9"].st.status == "locked"
+        assert s.app._groups() == [("ask_owner", 1)] and s.app._settleable()  # 剩下的一组还能接着结算
+        assert req(s, "POST", "/settle/start", headers=ck)[0] == 303 and s.app.sess is not None
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_r6_clarifying_question_is_shown_and_independent_notes_are_not_answers(tmp_path):
+    import threading
+    from people_reading.tests.test_server import login, req, serve
+    from people_reading.tests.test_step2 import extraction
+    from urllib.parse import quote
+    d1 = {**T.REPORT_DRAFTS[0], "source_quote": "他先问专家具体要解决哪个问题"}
+    d2 = {**T.REPORT_DRAFTS[0], "content": "另一场", "source_quote": "另一场会上他先问预算"}
+    w, st, it = T.env(tmp_path, [])
+    path = st.path; st.close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel([extraction(drafts=[d1], clarifying_question="是否同一份材料？"),
+                                                        extraction(drafts=[d2])]))
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote("他先问专家具体要解决哪个问题"), headers=ck)
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "是否同一份材料" in body and "data-act='/say'" in body and "跳过" in body  # 问题要显式呈现
+        assert s.app.lock.store.get_pending("main") is not None
+        # 一条独立的“记一句”（没有标明是在回答）：不能被当成回答，也不能续接同一个互动
+        req(s, "POST", "/say", "text=" + quote("另一场会上他先问预算"), headers=ck)
+        assert s.app.lock.store.get_pending("main") is None  # 独立记一句不是回答：追问已作废
+        ids = {d["proposed"]["interaction_id"] for d in s.app.lock.store.drafts() if "interaction_id" in d["proposed"]}
+        assert len(ids) == 2
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_r6_cited_earlier_record_supports_outcome_only_if_it_really_says_so(tmp_path):
+    from people_reading.engine import EngineError  # noqa: F401
+    for old_outcome, expect_recalled in (("专家需求", False), ("职责", True)):
+        w, st, it, sess = T.shortcut(tmp_path / old_outcome if False else tmp_path, [T.report_out(), T.proposal(), T.proposal(outcome=old_outcome, quote="他先问专家具体要解决什么问题")],
+                                     name=f"r6-{old_outcome}.db")
+        st.new_conversation("old", "t")
+        mid = st.add_message("old", "user", "当天记：他先问专家具体要解决什么问题")
+        o = w.add_observation("MTG-F-1", ({"message_id": mid, "start": 0, "end": 18},), "behavior", SELF, "F",
+                              "当天记：他先问专家具体要解决什么问题", source_mode="contemporaneous")
+        _as_confirmed_record(st, o, "first_q_topic")
+        sess.submit_report("c1", T.REPORT, hours_since_event=72)
+        sess.answer_premise(T.Q_PREMISE, "都没有")
+        sess.confirm_outcome(supported_by=(o.id,))
+        rec = w.engine.outcomes[("MTG-F-1", "first_q_topic", 1)]
+        assert rec.recalled_only is expect_recalled, old_outcome  # 引用与所选结果一致才算当时的证据；相反的不算

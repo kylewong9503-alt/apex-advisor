@@ -36,8 +36,8 @@ def check(q: str, items: list, *, cue: str = "", act: Optional[dict] = None) -> 
     return {"kind": "check", "q": q, "cue": cue, "items": [dict(id=i, text=t, sub=s) for i, t, s in items], "act": act}
 
 
-def open_ask(q: str, *, cue: str = "", act: Optional[dict] = None) -> dict:
-    return {"kind": "open", "q": q, "cue": cue, "act": act}
+def open_ask(q: str, *, cue: str = "", act: Optional[dict] = None, skip: Optional[dict] = None) -> dict:
+    return {"kind": "open", "q": q, "cue": cue, "act": act, "skip": skip}
 
 
 def build_prep_steps(v: dict) -> list:
@@ -259,7 +259,8 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
             ft = f"<div class='ft'><span></span><button type='button' class='btn p'{actattr(s.get('act'))}>继续</button></div>"
         elif s["kind"] == "open":
             core = f"{cue}<h1>{e(s['q'])}</h1><textarea rows='5' aria-label='你的回答' placeholder='按你记得的说就行，原话越接近越好'></textarea>"
-            ft = f"<div class='ft'><span></span><button type='button' class='btn p' data-next{actattr(s.get('act'))}>提交</button></div>"
+            sk = f"<button type='button' class='btn q'{actattr(s['skip'])}>跳过</button>" if s.get("skip") else "<span></span>"
+            ft = f"<div class='ft'>{sk}<button type='button' class='btn p' data-next{actattr(s.get('act'))}>提交</button></div>"
         elif s["kind"] == "answer":
             core = (f"{cue}<p class='line'>“{e(s['line'])}”</p><p class='why'>{e(s['reason'])}</p>")
             def one(k, b):

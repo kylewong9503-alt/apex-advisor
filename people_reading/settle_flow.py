@@ -215,15 +215,39 @@ class SettlementSession:
             self._beh = (self.eng.behaviors[(p.pre.behavior_key, p.pre.def_version)], p.pre)
         return self._beh
 
+    def _proposal_prompt(self, text: str) -> str:
+        beh, pre = self._behavior_for()
+        cats = tuple(beh.categories) if beh.outcome_type == "categorical" else None
+        crit = dict(beh.category_criteria) if cats else pre.settlement_criterion
+        return (f"行为：{beh.description}\n结果空间与判定标准：{crit}\n整场未出现时：{beh.no_event_rule}\n"
+                f"一句话涉及多个类别时：{beh.multi_topic_rule}\n"
+                f"需要分别判断是否发生的标志事件：{sorted(self._anchors())}\n用户原话：{text}")
+
+    def _supports(self, o, chosen) -> bool:
+        """你引用的当时记录是否真的支持所选结果。两条路：
+        ① 提议的依据原话就在这条记录里（同一条消息）；
+        ② 依据在别的消息里（正常录入里当天记录和晚到的报告必然是两条消息）：按同一个判定标准，只拿这条记录自己的原话再判一次，
+           判出来的结果必须等于所选结果，且判定的依据要能在它自己的原话里找到。模型不可用就无法核对，按不支持处理。"""
+        basis = (self.proposal or {}).get("span") if chosen == (self.proposal or {}).get("outcome") else None
+        if basis and any(isinstance(sp, dict) and sp.get("message_id") == basis.get("message_id")
+                         and sp["start"] <= basis["start"] and basis["end"] <= sp["end"] for sp in o.source_spans):
+            return True
+        if self.model is None or chosen is None:
+            return False
+        beh, _ = self._behavior_for()
+        cats = tuple(beh.categories) if beh.outcome_type == "categorical" else None
+        try:
+            d = self.model.structured(SYSTEM_PROPOSE, self._proposal_prompt(o.content), validate_proposal(cats))
+        except Exception:
+            return False
+        return bool(d.get("observable")) and d.get("outcome") == chosen and find_span(o.content, d.get("basis_quote", "")) is not None
+
     def _hidden_proposal(self) -> None:
         beh, pre = self._behavior_for()
         if not self.eng.needs_outcome_confirmation(self.iid, beh.key, beh.version) or self.model is None:
             return
         cats = tuple(beh.categories) if beh.outcome_type == "categorical" else None
-        crit = dict(beh.category_criteria) if cats else pre.settlement_criterion
-        prompt = (f"行为：{beh.description}\n结果空间与判定标准：{crit}\n整场未出现时：{beh.no_event_rule}\n"
-                  f"一句话涉及多个类别时：{beh.multi_topic_rule}\n"
-                  f"需要分别判断是否发生的标志事件：{sorted(self._anchors())}\n用户原话：{self.report_text}")
+        prompt = self._proposal_prompt(self.report_text)
         try:
             d = self.model.structured(SYSTEM_PROPOSE, prompt, validate_proposal(cats))
         except Exception:
@@ -270,13 +294,11 @@ class SettlementSession:
             bk_of = {d["confirmed_ref"]: d["proposed"].get("behavior_key") for d in self.intake.store.drafts() if d.get("confirmed_ref")}
             if any(bk_of.get(o.id) != beh.key for o in cited):
                 raise EngineError(f"supported_by 只能指关于“{beh.key}”这个行为的观察")
-            # 行为相同还不够：所选结果的依据原话必须就在你引用的当时记录里，才算“当时的记录支持这个结果”。
-            # 依据来自晚到的报告时，即使同场有同一行为的当时记录（甚至内容相反），结果仍是事后回忆。
-            basis = (self.proposal or {}).get("span") if outcome is None or outcome == (self.proposal or {}).get("outcome") else None
-            def covers(o) -> bool:
-                return basis is not None and any(isinstance(sp, dict) and sp.get("message_id") == basis.get("message_id")
-                                                 and sp["start"] <= basis["start"] and basis["end"] <= sp["end"] for sp in o.source_spans)
-            has_contemporaneous = bool(cited) and all(o.source_mode == "contemporaneous" for o in cited) and any(covers(o) for o in cited)
+            # 行为相同还不够：当时的记录必须真的支持所选结果（见 _supports）。
+            # 依据来自晚到的报告、而你引用的当时记录说的是别的（甚至相反），结果仍是事后回忆。
+            chosen_ = outcome if outcome is not None else (self.proposal or {}).get("outcome")
+            has_contemporaneous = bool(cited) and all(o.source_mode == "contemporaneous" for o in cited) \
+                and any(self._supports(o, chosen_) for o in cited)
             recalled_only = self.report_mode == "recalled" and not has_contemporaneous
             spans = (self.proposal["span"],) if self.proposal and self.proposal.get("span") else \
                 ({"message_id": self.report_mid, "start": 0, "end": len(self.report_text)},)

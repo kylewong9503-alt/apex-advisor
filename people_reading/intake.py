@@ -52,6 +52,21 @@ class Intake:
         self._seq = 0
         self.last_error = ""
 
+    def _new_iid(self, cid: str, mid: int) -> str:
+        """新互动的编号取自消息编号（库里单调递增、重开后不会重来）；同一条消息里产生的草稿共用它。
+        不再用内存里的计数器：上锁再解锁后计数器会从零开始，把互不相干的两场记录并进同一个互动。"""
+        iid = f"INT-{cid}-{mid}"
+        while iid in self.world.interactions and self._msg_of(iid) != mid:  # 旧库里按旧规则编的号可能撞上
+            iid += "x"
+        return iid
+
+    def _msg_of(self, iid: str):
+        for o in self.world.observations.values():
+            if o.interaction_id == iid and o.source_spans:
+                sp = o.source_spans[0]
+                return sp.get("message_id") if isinstance(sp, dict) else None
+        return None
+
     def adopt_world(self) -> None:
         """从已有 World 与库里保存的别名恢复人名索引（重新打开应用后调用）。
         已合并的占位人物，其名字和别名都指向合并后的真实人物。"""
@@ -128,8 +143,7 @@ class Intake:
                 dropped += 1
                 continue
             if iid is None:
-                self._seq += 1
-                iid = f"INT-{cid}-{self._seq}"
+                iid = self._new_iid(cid, mid)
             did = f"D{len(self.store.drafts()) + 1}"
             proposed = {"kind": x["kind"], "reporter_name": x["reporter"], "reporter_id": rep[1],
                         "subject_name": x["subject"], "subject_id": sub[1], "content": x["content"],
@@ -197,8 +211,7 @@ class Intake:
             draft_ids.append(did)
         if data.get("interaction") and any(v is not None for v in data["interaction"].values()):
             if iid is None:
-                self._seq += 1
-                iid = f"INT-{cid}-{self._seq}"
+                iid = self._new_iid(cid, mid)
             conflicts = self._merge_facts(iid, data["interaction"])
             if conflicts and not ask:
                 k, old, new_ = conflicts[0]
