@@ -35,6 +35,13 @@ def req(s, method, path, body="", headers=None):
     return r.status, dict(r.getheaders()), data
 
 
+def act_fields(body: str) -> dict:
+    """页面上当前这一步“继续”按钮要提交的字段（服务端用它把提交绑定到所显示的题目）。"""
+    import html as _h, json as _j, re as _re
+    m = _re.findall(r"data-fields='([^']*)'", body)
+    return _j.loads(_h.unescape(m[0])) if m else {}
+
+
 def login(s):
     st, h, _ = req(s, "POST", "/unlock", OK)
     assert st == 303
@@ -191,8 +198,12 @@ def test_settlement_end_to_end_over_http(tmp_path):
         q = s.app.sess.premise_questions()[0]
         body = req(s, "GET", "/", headers=ck)[2]
         assert "先核对前提" in body
-        assert req(s, "POST", "/settle/premise", f"pid={q['premise_id']}&choice=99", headers=ck)[0] == 409
-        assert req(s, "POST", "/settle/premise", f"pid={q['premise_id']}&choice={q['options'].index('都没有')}", headers=ck)[0] == 303
+        qt = act_fields(body)["q"]
+        assert q["premise_id"] not in qt  # 标识是带盐哈希，不含原文
+        assert req(s, "POST", "/settle/premise", f"q={qt}&choice=99", headers=ck)[0] == 409
+        assert req(s, "POST", "/settle/premise", f"choice={q['options'].index('都没有')}", headers=ck)[0] == 409  # 没带题目标识
+        assert req(s, "POST", "/settle/premise", f"q={qt}&choice={q['options'].index('都没有')}", headers=ck)[0] == 303
+        assert req(s, "POST", "/settle/premise", f"q={qt}&choice={q['options'].index('都没有')}", headers=ck)[0] == 409  # 重复提交不会答到别的题
         body = req(s, "GET", "/", headers=ck)[2]
         assert "这次结果算哪一种" in body
         cats = list(s.app.sess._behavior_for()[0].categories)
@@ -245,8 +256,12 @@ def test_settlement_late_report_is_recall_and_not_counted(tmp_path):
         q = s.app.sess.premise_questions()[0]
         body = req(s, "GET", "/", headers=ck)[2]
         assert "先核对前提" in body
-        assert req(s, "POST", "/settle/premise", f"pid={q['premise_id']}&choice=99", headers=ck)[0] == 409
-        assert req(s, "POST", "/settle/premise", f"pid={q['premise_id']}&choice={q['options'].index('都没有')}", headers=ck)[0] == 303
+        qt = act_fields(body)["q"]
+        assert q["premise_id"] not in qt  # 标识是带盐哈希，不含原文
+        assert req(s, "POST", "/settle/premise", f"q={qt}&choice=99", headers=ck)[0] == 409
+        assert req(s, "POST", "/settle/premise", f"choice={q['options'].index('都没有')}", headers=ck)[0] == 409  # 没带题目标识
+        assert req(s, "POST", "/settle/premise", f"q={qt}&choice={q['options'].index('都没有')}", headers=ck)[0] == 303
+        assert req(s, "POST", "/settle/premise", f"q={qt}&choice={q['options'].index('都没有')}", headers=ck)[0] == 409  # 重复提交不会答到别的题
         body = req(s, "GET", "/", headers=ck)[2]
         assert "这次结果算哪一种" in body
         cats = list(s.app.sess._behavior_for()[0].categories)
@@ -328,3 +343,35 @@ def test_profile_sums_to_one_and_matches_design():
     assert profile(cats, "职责", 0.6) == {"职责": 0.6, "专家需求": 0.2, "其他": 0.2}
     for p in (0.8, 0.6, 0.45, None):
         assert abs(sum(profile(cats, "职责", p).values()) - 1) < 1e-9
+
+
+def test_multiple_behaviors_on_one_meeting_ask_which_to_settle_first(tmp_path):
+    from people_reading import scenarios as S
+    from people_reading.engine import make_rule
+    from people_reading.llm import ScriptedModel
+    from people_reading.tests import test_step4 as T4
+    w, st, it, pm, mid, iid = T4.c2(tmp_path)
+    it.model.outputs = [T4.PREP_OUT]
+    pm.prepare(); pm.confirm_categories(); pm.formalize(T4.DIST_H)
+    pm.lock_prediction(T4.DIST_P, None)
+    e = w.engine
+    e.define_behavior(S.ASK)
+    r1 = make_rule("RA", "总是追问", "ask_owner", {"kind": "const_binary", "p": 0.8})
+    r2 = make_rule("RB", "很少追问", "ask_owner", {"kind": "const_binary", "p": 0.2})
+    e.lock_prediction(id="P-9", person_id="F", matter_id=mid, behavior_key="ask_owner", bind_mode="condition_match",
+                      conditions={"with": "F"}, rules=[r1, r2], prob=0.6, settlement_criterion="是否追问负责人")
+    st.sync_world(w); path = st.path; st.close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel([]))
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    try:
+        ck = login(s)
+        assert req(s, "POST", "/settle/start", headers=ck)[0] == 303
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "这次先结算哪一项" in body and s.app.sess is None  # 不替你选
+        qt = act_fields(body)["q"]
+        assert req(s, "POST", "/settle/pick", "q=bad&choice=0", headers=ck)[0] == 409
+        assert req(s, "POST", "/settle/pick", f"q={qt}&choice=0", headers=ck)[0] == 303
+        assert s.app.sess is not None and s.app.sess.behavior_key == s.app._groups()[0][0]
+        s.app.sess._behavior_for()  # 指明了行为与版本：不再报“需要 behavior_key”
+    finally:
+        s.shutdown(); s.server_close()

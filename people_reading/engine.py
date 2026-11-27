@@ -560,6 +560,7 @@ class Engine:
         opp_id = pre.bound_opportunity_id or opp_id
         if opp_id not in self.opps:
             raise EngineError("condition_match 结算需要指明匹配的机会")
+        self._assert_intact(opp_id)  # 结算后要重算这个机会：重算依赖的已结算预测也必须完整，否则先拒绝，不留半截
         opp = self.opps[opp_id]
         if pre.bind_mode == "condition_match":
             if any(not _same(opp.facts.get(k), v) for k, v in pre.conditions):

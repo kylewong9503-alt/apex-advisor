@@ -270,7 +270,13 @@ class SettlementSession:
             bk_of = {d["confirmed_ref"]: d["proposed"].get("behavior_key") for d in self.intake.store.drafts() if d.get("confirmed_ref")}
             if any(bk_of.get(o.id) != beh.key for o in cited):
                 raise EngineError(f"supported_by 只能指关于“{beh.key}”这个行为的观察")
-            has_contemporaneous = bool(cited) and all(o.source_mode == "contemporaneous" for o in cited)
+            # 行为相同还不够：所选结果的依据原话必须就在你引用的当时记录里，才算“当时的记录支持这个结果”。
+            # 依据来自晚到的报告时，即使同场有同一行为的当时记录（甚至内容相反），结果仍是事后回忆。
+            basis = (self.proposal or {}).get("span") if outcome is None or outcome == (self.proposal or {}).get("outcome") else None
+            def covers(o) -> bool:
+                return basis is not None and any(isinstance(sp, dict) and sp.get("message_id") == basis.get("message_id")
+                                                 and sp["start"] <= basis["start"] and basis["end"] <= sp["end"] for sp in o.source_spans)
+            has_contemporaneous = bool(cited) and all(o.source_mode == "contemporaneous" for o in cited) and any(covers(o) for o in cited)
             recalled_only = self.report_mode == "recalled" and not has_contemporaneous
             spans = (self.proposal["span"],) if self.proposal and self.proposal.get("span") else \
                 ({"message_id": self.report_mid, "start": 0, "end": len(self.report_text)},)

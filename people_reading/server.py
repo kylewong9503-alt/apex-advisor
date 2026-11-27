@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import html
 import http.server
 import ipaddress
@@ -73,6 +75,8 @@ class App:
         self.sess: Optional[SettlementSession] = None  # 会后结算（内存里；重启后要重新开始）
         self.sess_hours: Optional[float] = None
         self.sess_review: Optional[dict] = None
+        self.settle_pick: Optional[list] = None  # 同一场会有多个（行为，版本）要结算时，先让你选一项
+        self.salt = secrets.token_bytes(16)  # 把提交绑定到所显示题目的标识：带盐哈希，不含任何原文
         self.lk: Optional[dict] = None  # 锁定预测进行中的选择（锁定前都可改，锁定后不可改）
         self.pms: dict = {}  # 议题 → PreMeeting（模型只在会前页打开时调用一次，失败也缓存，不反复发送）
         self.pm_failed: set = set()
@@ -104,6 +108,11 @@ class App:
         self.w, self.intake, self.pms, self.pm_failed = None, None, {}, set()
         self.sess, self.sess_hours, self.sess_review = None, None, None
         self.lk = None
+        self.settle_pick = None
+        self.salt = secrets.token_bytes(16)
+
+    def tok(self, *parts) -> str:
+        return hmac.new(self.salt, repr(parts).encode(), hashlib.sha256).hexdigest()[:16]
 
     def _world(self):
         self.lock.store  # 已上锁会抛 Locked
@@ -172,10 +181,18 @@ class App:
         got = self._planned()
         if got is None or got[0] not in self._world().engine.opps:
             return False
+        return bool(self._groups())
+
+    def _groups(self) -> list:
+        """这场会上待结算的（行为，版本）组。"""
+        got = self._planned()
+        if got is None or got[0] not in self._world().engine.opps:
+            return []
         try:
-            return bool(SettlementSession(self.intake, self.current_mid(), got[0], None).matched())
+            ps = SettlementSession(self.intake, self.current_mid(), got[0], None).matched()
         except Exception:
-            return False
+            return []
+        return sorted({(p.pre.behavior_key, p.pre.def_version) for p in ps})
 
     def _planned(self):
         w = self._world()
@@ -187,6 +204,11 @@ class App:
 
     def settle_steps(self) -> list:
         s = self.sess
+        if s is None and self.settle_pick:
+            eng = self._world().engine
+            opts = [(eng.behaviors[g].description if g in eng.behaviors else g[0], "", f"第 {g[1]} 版定义") for g in self.settle_pick]
+            return [ask("这次先结算哪一项？", opts, cue="同一场会上有几项预测，一次结算一项", selected=None,
+                        act={"url": "/settle/pick", "fields": {"q": self.tok("pick", self.settle_pick)}})]
         if s is None:
             return []
         if s.state == "awaiting_report":
@@ -200,7 +222,7 @@ class App:
             if left:
                 q = left[0]
                 return [ask(q["question"], [(o, "", "") for o in q["options"]], cue="先核对前提", selected=None,
-                            act={"url": "/settle/premise", "fields": {}})]  # 服务端总是回答第一个未答前提：页面上不带任何标识
+                            act={"url": "/settle/premise", "fields": {"q": self._ptok(q)}})]  # 只带带盐哈希：绑定到这道题，不含原文
             prop = s.propose_outcome()
             if prop.get("reused"):
                 s.confirm_outcome()
@@ -235,9 +257,25 @@ class App:
         got = self._planned()
         if got is None or mid not in self._world().matters or not self._settleable():
             raise KeyError(mid)
-        iid, x = got
-        self.sess = SettlementSession(self.intake, mid, iid, self.model, x.get("label", ""))
+        groups = self._groups()
         self.sess_hours, self.sess_review = None, None
+        if len(groups) == 1:
+            self._open_session(groups[0])
+        else:
+            self.settle_pick = groups  # 多组：先选，不替你选
+
+    def _open_session(self, group) -> None:
+        iid, x = self._planned()
+        self.sess = SettlementSession(self.intake, self.current_mid(), iid, self.model, x.get("label", ""),
+                                      behavior_key=group[0], def_version=group[1])
+        self.settle_pick = None
+
+    def settle_pick_one(self, choice: str, q: str) -> None:
+        g = self.settle_pick
+        if not g or self.sess is not None or not hmac.compare_digest(q, self.tok("pick", g)) \
+                or not choice.isdigit() or int(choice) >= len(g):
+            raise KeyError("pick")
+        self._open_session(g[int(choice)])
 
     def settle_when(self, choice: str) -> None:
         if self.sess is None or self.sess.state != "awaiting_report" or choice not in ("0", "1"):
@@ -249,10 +287,15 @@ class App:
             raise KeyError("report")
         self.sess.submit_report(self.CID, text.strip(), hours_since_event=self.sess_hours)
 
-    def settle_premise(self, choice: str) -> None:
+    def _ptok(self, q: dict) -> str:
+        return self.tok("premise", q["premise_id"], q["anchor_event"], q["cutoff"])
+
+    def settle_premise(self, choice: str, qtok: str = "") -> None:
         if self.sess is None or self.sess.state != "premise_check":
             raise KeyError("premise")
         q = next(iter(self._open_premises()), None)
+        if q is None or not hmac.compare_digest(qtok, self._ptok(q)):  # 重复提交或旧页面：不替你回答下一题
+            raise KeyError("premise")
         if q is None or not choice.isdigit() or int(choice) >= len(q["options"]):
             raise KeyError("premise")
         self.sess.answer_premise(q["premise_text"], q["options"][int(choice)], cutoff=q["cutoff"], anchor_event=q["anchor_event"])
@@ -534,7 +577,9 @@ def make_handler(app: App):
                     elif path == "/settle/report":
                         app.settle_report((form.get("text") or [""])[0][:4000])
                     elif path == "/settle/premise":
-                        app.settle_premise((form.get("choice") or [""])[0])
+                        app.settle_premise((form.get("choice") or [""])[0], (form.get("q") or [""])[0])
+                    elif path == "/settle/pick":
+                        app.settle_pick_one((form.get("choice") or [""])[0], (form.get("q") or [""])[0])
                     elif path == "/settle/outcome":
                         app.settle_outcome((form.get("choice") or [""])[0])
                     else:

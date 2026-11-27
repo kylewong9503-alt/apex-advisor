@@ -118,11 +118,12 @@ def _as_confirmed_record(st, o, behavior_key):
 
 def test_f3_explicitly_cited_contemporaneous_observation_makes_the_outcome_countable(tmp_path):
     w, st, it, sess = T.shortcut(tmp_path, [T.report_out(), T.proposal()])
-    o = w.add_observation("MTG-F-1", ("当天记：他先问专家要解决什么问题",), "behavior", SELF, "F", "当天记：他先问专家要解决什么问题",
-                          source_mode="contemporaneous")
-    _as_confirmed_record(st, o, "first_q_topic")  # 第 4 轮：依据必须是关于这个行为的记录
     sess.submit_report("c1", T.REPORT, hours_since_event=72)
     sess.answer_premise(T.Q_PREMISE, "都没有")
+    # 第 5 轮：当时记录必须是关于这个行为的，且所选结果的依据原话就在这条当时记录里
+    o = w.add_observation("MTG-F-1", (sess.proposal["span"],), "behavior", SELF, "F", "当天记：他先问专家要解决什么问题",
+                          source_mode="contemporaneous")
+    _as_confirmed_record(st, o, "first_q_topic")
     sess.confirm_outcome(supported_by=(o.id,))  # 你明确指出：这条当时的记录就是结果的依据
     assert w.engine.outcomes[("MTG-F-1", "first_q_topic", 1)].recalled_only is False
 
@@ -545,12 +546,12 @@ def test_h2_supported_by_must_belong_to_this_interaction_and_enters_source_spans
     with pytest.raises(EngineError):
         sess.confirm_outcome(supported_by=(other.id,))  # 别的会议的观察不能充当本场结果的依据
     assert ("MTG-F-1", "first_q_topic", 1) not in w.engine.outcomes  # 失败时什么也没写
-    mine = w.add_observation("MTG-F-1", ("当天记：他先问专家要解决什么问题",), "behavior", SELF, "F", "当天记：他先问专家要解决什么问题",
+    mine = w.add_observation("MTG-F-1", (sess.proposal["span"],), "behavior", SELF, "F", "当天记：他先问专家要解决什么问题",
                              source_mode="contemporaneous")
     _as_confirmed_record(st, mine, "first_q_topic")
     sess.confirm_outcome(supported_by=(mine.id,))
     rec = w.engine.outcomes[("MTG-F-1", "first_q_topic", 1)]
-    assert rec.recalled_only is False and "当天记：他先问专家要解决什么问题" in rec.source_spans  # 证据链里有它
+    assert rec.recalled_only is False and sess.proposal["span"] in rec.source_spans  # 证据链里有它
 
 
 # C 错误口令不能改动数据库
@@ -761,3 +762,35 @@ def test_r4_legacy_db_with_rule_redefined_after_lock_settles_with_locked_rule():
     e2.confirm_outcome("O", "ask_owner", 1, False)
     e2.settle_prediction("P", {})
     assert e2.rows[("O", "ask_owner", "RA", "RB")].status == "counted"
+
+
+
+# ───────── 第 5 轮复审（0ca6a7e）─────────
+def test_r5_contradicting_contemporaneous_record_does_not_make_recall_countable(tmp_path):
+    w, st, it, sess = T.shortcut(tmp_path, [T.report_out(), T.proposal()])
+    sess.submit_report("c1", T.REPORT, hours_since_event=72)
+    sess.answer_premise(T.Q_PREMISE, "都没有")
+    mid = st.add_message("c1", "user", "当天记：他先问谁牵头")
+    then = w.add_observation("MTG-F-1", ({"message_id": mid, "start": 0, "end": 10},), "behavior", SELF, "F",
+                             "当天记：他先问谁牵头", source_mode="contemporaneous")
+    _as_confirmed_record(st, then, "first_q_topic")  # 同一行为标签，但内容与所选结果相反
+    sess.confirm_outcome(supported_by=(then.id,))
+    rec = w.engine.outcomes[("MTG-F-1", "first_q_topic", 1)]
+    assert rec.recalled_only is True  # 依据来自晚到的报告：仍是事后回忆
+    assert all(r.status != "counted" for r in w.engine.rows.values())
+
+
+def test_r5_settle_refuses_before_writing_when_other_settled_prediction_is_tampered():
+    from types import MappingProxyType
+    e, ra, rb = locked_engine()
+    e.lock_prediction(id="Q", person_id="X", matter_id="M", behavior_key="ask_owner", bind_mode="condition_match",
+                      conditions={"submitter": "S"}, rules=[ra, rb], prob=0.6, settlement_criterion="c")
+    e.confirm_outcome("O", "ask_owner", 1, False)
+    e.settle_prediction("P", {})
+    p = e.preds["P"]
+    fr = dict(p.frozen_rules)
+    fr["RA"] = make_rule("RA", "RA", "ask_owner", {"kind": "const_binary", "p": 0.01})
+    p.frozen_rules = MappingProxyType(fr)
+    with pytest.raises(EngineError):
+        e.settle_prediction("Q", {}, opp_id="O")
+    assert e.preds["Q"].st.status == "locked"  # 没有被标为 settled，之后修好还能正常结算
