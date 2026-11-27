@@ -88,7 +88,9 @@ def render_app(w, store=None, *, mode: str = "code", prep=None, conversations: O
     nav = [("workbench", "工作台"), ("people", "人物"), ("graph", "关系图")]
     left = "".join(f"<a href='#/{k}' data-nav='{k}'>{n}</a>" for k, n in nav)
     bottom = "".join(f"<a href='#/{k}' data-nav='{k}'>{n}</a>" for k, n in nav)
-    toggle = (f"<a href='{E(toggle_href)}'>{'取消遮挡' if masked else '一键遮挡'}</a>" if toggle_href else "")
+    # 遮挡时切换链接是常量：调用方给的 URL 常常带着议题名或人名，不能写进遮挡后的页面；真实应用由后端处理这个参数
+    href = "?mask=off" if masked else toggle_href
+    toggle = (f"<a href='{E(href)}'>{'取消遮挡' if masked else '一键遮挡'}</a>" if (toggle_href or masked) else "")
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"<title>{E(title)}</title><meta name='privacy-capture' content='graph'><style>{CSS}{SHELL_CSS}{PRINT_GUARD_CSS}</style></head><body>"
             f"<div class='app'><aside><b>识人系统</b><h4>导航</h4>{left}<h4>最近对话</h4>{side_convs}"

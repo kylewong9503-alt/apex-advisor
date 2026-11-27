@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from types import MappingProxyType
 import json
 from dataclasses import dataclass, field
 from itertools import combinations
@@ -162,6 +163,7 @@ class Opportunity:
     facts: dict
     label: str = ""
     corrected: bool = False
+    version: int = 0  # 每次事实更正 +1；更正预览令牌绑定它，事实改回原值也不能让旧预览复活
 
 
 @dataclass
@@ -455,7 +457,7 @@ class Engine:
             locked_at=self.now(), content_hash=h,
         )
         p = Prediction(pre)
-        p.frozen_rules = frozen
+        p.frozen_rules = MappingProxyType(frozen)  # 只读：不能原地替换其中的规则
         if bind_mode == "specific_item":  # specific_item：锁定时用已知事实求值
             facts = self.opps[opportunity_id].facts
             for r in (frozen[x.id] for x in rules):
@@ -480,7 +482,15 @@ class Engine:
             baseline_dist=pre.baseline_dist, baseline_note=pre.baseline_note, threshold=pre.threshold,
             window=pre.window, rule_defs=pre.rule_defs,
         )
-        return hashlib.sha256(_canon(content).encode()).hexdigest() == pre.content_hash
+        if hashlib.sha256(_canon(content).encode()).hexdigest() != pre.content_hash:
+            return False
+        # 结算实际用的是 frozen_rules，哈希必须覆盖它：逐条核对它们的定义与规格仍是锁定时的
+        fr = self.preds[pid].frozen_rules
+        for rid, definition, spec in pre.rule_defs:
+            r = fr.get(rid)
+            if r is None or r.definition != definition or _canon(r.spec) != spec:
+                return False
+        return True
 
     # —— 结算字段只写一次（A.5.2） ——
     def write_settlement_fields(self, pid: str, **fields) -> None:
@@ -523,6 +533,8 @@ class Engine:
         p = self.preds[pid]
         if p.st.status != "locked":
             return p  # R5：重复结算不改变任何计数
+        if not self.verify_hash(pid):
+            raise EngineError(f"预测 {pid} 的冻结内容与锁定时的哈希不一致，拒绝结算")
         pre = p.pre
         opp_id = pre.bound_opportunity_id or opp_id
         if opp_id not in self.opps:
@@ -671,7 +683,7 @@ class Engine:
     def _preview_token(self, opp_id: str, field_name: str, value: Any) -> str:
         """令牌绑定：这一笔变更 + 预览当时该机会的事实与比较状态。状态之后变了，令牌作废。"""
         o = self.opps[opp_id]
-        state = [o.facts, sorted((list(k), r.state()) for k, r in self.rows.items() if k[0] == opp_id),
+        state = [o.version, o.facts, sorted((list(k), r.state()) for k, r in self.rows.items() if k[0] == opp_id),
                  sorted((p.id, p.st.status) for p in self.preds.values())]
         return hashlib.sha256(_canon([opp_id, field_name, value, state]).encode()).hexdigest()[:24]
 
@@ -712,6 +724,7 @@ class Engine:
                         reason or f"用户更正 {field_name}", spans=source_spans)
         o.facts[field_name] = value
         o.corrected = True
+        o.version += 1
         for p in self._settled_on(opp_id):  # 快照与原 Brier 不动，仅打标
             if any(p.frozen_rules[rid].value(o.facts) != s.value for rid, s in p.rule_snaps.items()):
                 p.st.lock_facts_corrected = True
@@ -837,8 +850,8 @@ class Engine:
                 x["window"] = tuple(x["window"])
             p = Prediction(PreContent(**x), Settlement(**pd["st"]),
                            {k: RuleSnap(**v) for k, v in pd["snaps"].items()})
-            p.frozen_rules = {k: make_rule(k, f["name"], f["behavior_key"], f["spec"], f["definition"])
-                              for k, f in pd.get("frozen", {}).items()} or {k: e.rules[k] for k in p.rule_snaps}
+            p.frozen_rules = MappingProxyType({k: make_rule(k, f["name"], f["behavior_key"], f["spec"], f["definition"])
+                                               for k, f in pd.get("frozen", {}).items()} or {k: e.rules[k] for k in p.rule_snaps})
             e.preds[p.id] = p
         for o in d["outcomes"]:
             o["source_spans"] = tuple(o["source_spans"])

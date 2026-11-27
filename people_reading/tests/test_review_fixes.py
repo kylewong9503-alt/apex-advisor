@@ -97,12 +97,24 @@ def test_f3_late_report_is_recalled_even_when_drafts_unconfirmed(tmp_path):
     assert w.engine.cumulative("H1", "H2")["n"] == 0
 
 
-def test_f3_earlier_contemporaneous_record_keeps_outcome_countable(tmp_path):
+def test_f3_unrelated_contemporaneous_record_does_not_make_a_late_report_countable(tmp_path):
+    """会议当天只记了签到，72 小时后才回忆首问内容：结果引用的是晚到的报告，仍是回忆，不进比较。"""
     w, st, it, sess = T.shortcut(tmp_path, [T.report_out(), T.proposal()])
-    w.add_observation("MTG-F-1", ("当天记的",), "behavior", SELF, "F", "当天记的", source_mode="contemporaneous")
+    w.add_observation("MTG-F-1", ("到场签到",), "behavior", SELF, "F", "到场签到", source_mode="contemporaneous")
     sess.submit_report("c1", T.REPORT, hours_since_event=72)
     sess.answer_premise(T.Q_PREMISE, "都没有")
     sess.confirm_outcome()
+    assert w.engine.outcomes[("MTG-F-1", "first_q_topic", 1)].recalled_only is True
+    assert next(r for k, r in w.engine.rows.items() if k[2:] == ("H1", "H2")).status == "recall_only"
+
+
+def test_f3_explicitly_cited_contemporaneous_observation_makes_the_outcome_countable(tmp_path):
+    w, st, it, sess = T.shortcut(tmp_path, [T.report_out(), T.proposal()])
+    o = w.add_observation("MTG-F-1", ("当天记：他先问专家要解决什么问题",), "behavior", SELF, "F", "当天记：他先问专家要解决什么问题",
+                          source_mode="contemporaneous")
+    sess.submit_report("c1", T.REPORT, hours_since_event=72)
+    sess.answer_premise(T.Q_PREMISE, "都没有")
+    sess.confirm_outcome(supported_by=(o.id,))  # 你明确指出：这条当时的记录就是结果的依据
     assert w.engine.outcomes[("MTG-F-1", "first_q_topic", 1)].recalled_only is False
 
 
@@ -147,10 +159,11 @@ def test_f5_masked_output_has_no_matter_or_prediction_identifiers():
                       opportunity_id="O", rules=[ra, rb], prob=0.7, settlement_criterion="c")
     e.confirm_outcome("O", "ask_owner", 1, False)
     e.settle_prediction("P-保密", {})
-    html = render_app(w, None, mode="masked", title="保密议题 · 周报", toggle_href="x.html")
+    html = render_app(w, None, mode="masked", title="保密议题 · 周报", toggle_href="保密议题-周报.html?m=P-保密")
     for leak in ("保密议题", "P-保密", "周报", "愿意打听"):
         assert leak not in html, leak
     assert "data-tab='" in html and "data-tab='保密" not in html and "data-sub='保密" not in html
+    assert "href='?mask=off'" in html  # 遮挡下切换链接是常量，不输出调用方给的 URL
     code_html = render_app(w, None, mode="code", title="保密议题 · 周报")
     assert "保密议题" in code_html and "P-保密" in code_html  # 对照：不遮挡时确实会出现
 
@@ -344,3 +357,142 @@ def test_f17_requirements_declare_cryptography():
     import pathlib
     text = (pathlib.Path(__file__).parents[2] / "requirements.txt").read_text()
     assert "cryptography" in text
+
+
+# ═════════ 第二轮审查（对 4dc1956）：9 条 ═════════
+import dataclasses  # noqa: E402
+
+from people_reading.assistant import Assistant  # noqa: E402
+from people_reading.skills import SkillRegistry  # noqa: E402
+
+
+# 1 旧版数据库必须能升级
+def test_g1_old_database_without_new_columns_still_opens(tmp_path):
+    st = Store(str(tmp_path / "old.db"), PASS)
+    st.new_conversation("c", "t"); st.add_message("c", "user", "X 连问三次谁负责")
+    w = World(); w.add_person(Person("X", "X"))
+    o = w.add_observation("I1", ({"message_id": 1, "start": 0, "end": 3},), "behavior", SELF, "X", "X 连问", summary="概括")
+    st.save_person(w.persons["X"]); st.save_observation(o, [{"message_id": 1, "start": 0, "end": 3}], None)
+    st.db.execute("ALTER TABLE observation DROP COLUMN summary")  # 模拟上一版建的库：没有 summary 列
+    st.db.execute("ALTER TABLE person DROP COLUMN quadrant_auto")
+    st.db.commit(); st.close()
+    st2 = Store(str(tmp_path / "old.db"), PASS)  # 用新版打开：自动补列
+    w2, _ = st2.load_world()
+    obs = next(iter(w2.observations.values()))
+    assert obs.content == "X 连问" and obs.summary == ""
+    o2 = w2.add_observation("I2", ({"message_id": 1, "start": 0, "end": 3},), "behavior", SELF, "X", "再记一条", summary="新概括")
+    st2.save_observation(o2, [{"message_id": 1, "start": 0, "end": 3}], None)
+    st2.sync_world(w2)
+    st2.close()
+    assert [o.summary for o in Store(str(tmp_path / "old.db"), PASS).load_world()[0].observations.values()] == ["", "新概括"]
+
+
+# 2 已确认的更正不能被后续录入回滚
+def test_g2_confirmed_correction_is_not_rolled_back_by_later_intake(tmp_path):
+    first = extraction(drafts=[D_BEH], clarifying_question="是同一份提案吗？",
+                       interaction={"cross_dept": None, "submitter": "我", "responsible_named": None})
+    later = extraction(interaction={"cross_dept": True, "submitter": None, "responsible_named": None})
+    w, st, it = T.env(tmp_path, [first, later])
+    a = Assistant(it, SkillRegistry(st))
+    it.handle("c1", TEXT1); it.confirm_all()
+    opp = next(iter(w.stat_opps))
+    pv = a.handle("c1", "那份提案是M提交的")
+    assert pv.kind == "correction_preview"
+    a.confirm_correction("c1", pv.preview_id)
+    assert w.stat_opps[opp].target_id == "M" and w.engine.opps[opp].facts["submitter"] == "M"
+    it.handle("c1", "它是跨部门的")  # 只补充了是否跨部门
+    assert w.stat_opps[opp].cross_dept is True  # 补全了
+    assert w.stat_opps[opp].target_id == "M" and w.engine.opps[opp].facts["submitter"] == "M"  # 更正没被回滚
+
+
+# 3 哈希验证必须覆盖实际用于结算的冻结规则
+def test_g3_swapped_frozen_rule_fails_hash_and_blocks_settlement():
+    e, ra, rb = locked_engine()
+    p = e.preds["P"]
+    swapped = make_rule("RA", "总是追问", "ask_owner", {"kind": "const_binary", "p": 0.2}, definition=ra.definition)
+    try:
+        p.frozen_rules["RA"] = swapped  # 若冻结表本身不可变，这里会抛 TypeError，也算修好
+    except TypeError:
+        return
+    assert not e.verify_hash("P")
+    e.confirm_outcome("O", "ask_owner", 1, False)
+    with pytest.raises(EngineError):
+        e.settle_prediction("P", {})
+
+
+def test_g3_replacing_the_whole_frozen_mapping_is_caught_too():
+    e, ra, rb = locked_engine()
+    p = e.preds["P"]
+    swapped = make_rule("RA", "总是追问", "ask_owner", {"kind": "const_binary", "p": 0.2}, definition=ra.definition)
+    p.frozen_rules = {"RA": swapped, "RB": p.frozen_rules["RB"]}
+    assert not e.verify_hash("P")
+    e.confirm_outcome("O", "ask_owner", 1, False)
+    with pytest.raises(EngineError):
+        e.settle_prediction("P", {})
+
+
+# 4 同一行为的两个定义版本必须能分别结算
+def test_g4_two_definition_versions_are_settled_separately(tmp_path):
+    w, st, it, sess = T.shortcut(tmp_path, [T.report_out(), T.proposal()])
+    e = w.engine
+    e.define_behavior(dataclasses.replace(S.TOPIC, version=2, no_event_rule="整场没问题 → 无法观察"))
+    e.lock_prediction(id="P-v2", person_id="F", matter_id="MT1", behavior_key="first_q_topic", bind_mode="condition_match",
+                      conditions={"with": "F"}, rules=[e.rules["H1"], e.rules["H2"]], prob_dist=T.DIST_P, def_version=2)
+    both = SettlementSession(it, "MT1", "MTG-F-1", it.model, behavior_key="first_q_topic")
+    with pytest.raises(EngineError) as ex:
+        both.submit_report("c1", T.REPORT)
+    assert "def_version" in str(ex.value)  # 提示里要求的参数必须是真的能传的
+    v1 = SettlementSession(it, "MT1", "MTG-F-1", it.model, behavior_key="first_q_topic", def_version=1)
+    v1.submit_report("c1", T.REPORT)
+    v1.answer_premise(T.Q_PREMISE, "都没有")
+    v1.confirm_outcome()
+    assert e.preds["P-F1"].st.status == "settled" and e.preds["P-v2"].st.status == "locked"
+
+
+# 5 标志事件不同、截止点相同的前提必须能分别回答
+def test_g5_premises_differing_only_by_anchor_event_can_be_answered_separately(tmp_path):
+    w, st, it, sess = T.shortcut(tmp_path, [T.report_out(), T.proposal()])
+    mk = lambda anchor: Premise("p", "未展示材料", anchor_event=anchor, cutoff="散会",  # noqa: E731
+                                choices=(("成立", "holds"), ("不成立", "violated")))
+    e = w.engine
+    e.preds.pop("P-F1")
+    e.lock_prediction(id="PA", person_id="F", matter_id="MT1", behavior_key="first_q_topic", bind_mode="specific_item",
+                      opportunity_id="MTG-F-1", rules=[e.rules["H1"], e.rules["H2"]], premises=(mk("首次提问"),), prob_dist=T.DIST_P)
+    e.lock_prediction(id="PB", person_id="F", matter_id="MT1", behavior_key="first_q_topic", bind_mode="condition_match",
+                      conditions={"with": "F"}, rules=[e.rules["H1"], e.rules["H2"]], premises=(mk("首次表决"),), prob_dist=T.DIST_P)
+    sess.submit_report("c1", T.REPORT)
+    qs = sess.premise_questions()
+    assert len(qs) == 2 and {q["anchor_event"] for q in qs} == {"首次提问", "首次表决"}
+    with pytest.raises(EngineError):
+        sess.answer_premise("未展示材料", "成立", cutoff="散会")  # 仍然有歧义
+    sess.answer_premise("未展示材料", "成立", cutoff="散会", anchor_event="首次提问")
+    sess.answer_premise("未展示材料", "不成立", cutoff="散会", anchor_event="首次表决")
+    sess.confirm_outcome()
+    assert (e.preds["PA"].st.status, e.preds["PB"].st.status) == ("settled", "void_premise_changed")
+
+
+# 8 重新形式化失败后，假设与规则必须保持一致
+def test_g8_failed_reformalize_leaves_hypothesis_unchanged():
+    w = World()
+    w.engine.define_behavior(S.ASK)
+    w.add_hypothesis("X", "s"); w.formalize("H1", "ask_owner", p_hit=0.8)
+    w.engine.add_opportunity("O", "ask_owner", {})
+    w.engine.lock_prediction(id="P", person_id="X", matter_id="M", behavior_key="ask_owner", bind_mode="specific_item",
+                             opportunity_id="O", rules=[w.engine.rules["H1"]], prob=0.7, settlement_criterion="c")
+    with pytest.raises(EngineError):
+        w.formalize("H1", "ask_owner", p_hit=0.2)
+    h = w.hypotheses["H1"]
+    assert h.p_hit == 0.8 and h.formal and w.engine.rules["H1"].value({}) == 0.8
+
+
+# 9 失效的更正预览不能因为事实改回原值而复活
+def test_g9_stale_preview_token_cannot_be_revived_by_reverting_the_value():
+    e = Engine(); e.define_behavior(S.ASK)
+    e.add_opportunity("O", "ask_owner", {"n": 0})
+    stale = e.correction_preview("O", "n", 2)["token"]
+    for v in (1, 0):  # 0 → 1 → 0：事实回到原值，但期间发生了两次更正
+        tok = e.correction_preview("O", "n", v)["token"]
+        e.apply_correction("O", "n", v, confirmed_by_user=True, preview_token=tok)
+    assert e.opps["O"].facts["n"] == 0
+    with pytest.raises(EngineError):
+        e.apply_correction("O", "n", 2, confirmed_by_user=True, preview_token=stale)

@@ -58,9 +58,10 @@ SYSTEM_PROPOSE = """你在帮用户按事前写好的标准判断会谈的实际
 
 class SettlementSession:
     def __init__(self, intake: Intake, matter_id: str, interaction_id: str, model=None, meeting_time: str = "",
-                 behavior_key: Optional[str] = None) -> None:
-        """behavior_key：同一场会对同一机会有多种行为的预测时，必须指明这次按哪种行为结算。"""
-        self.behavior_key = behavior_key
+                 behavior_key: Optional[str] = None, def_version: Optional[int] = None) -> None:
+        """behavior_key / def_version：同一场会对同一机会有多种行为、或同一行为的多个定义版本的预测时，
+        必须指明这次按哪一个（行为，版本）结算——结果是按（机会，行为，定义版本）确认的。"""
+        self.behavior_key, self.def_version = behavior_key, def_version
         self.report_mode = "contemporaneous"
         self.intake, self.w = intake, intake.world
         self.matter_id, self.iid, self.model, self.meeting_time = matter_id, interaction_id, model, meeting_time
@@ -85,6 +86,8 @@ class SettlementSession:
             if p.st.status != "locked":
                 continue
             if self.behavior_key is not None and p.pre.behavior_key != self.behavior_key:
+                continue
+            if self.def_version is not None and p.pre.def_version != self.def_version:
                 continue
             if p.pre.bind_mode == "specific_item" and p.pre.bound_opportunity_id == self.iid:
                 out.append(p)
@@ -125,18 +128,24 @@ class SettlementSession:
                 seen.add(ident(pr))
                 q = pr.cutoff_question if (self._anchor_occurred() is False and pr.cutoff_question) else \
                     (pr.question or f"关于“{pr.text}”，实际情况是？")
-                qs.append({"premise_id": pr.id, "premise_text": pr.text, "cutoff": pr.cutoff, "question": q,
+                qs.append({"premise_id": pr.id, "premise_text": pr.text, "cutoff": pr.cutoff, "anchor_event": pr.anchor_event,
+                           "question": q,
                            "options": [c[0] for c in (pr.choices or DEFAULT_CHOICES)],
                            "prediction_ids": [x.id for x in self.matched() if any(ident(y) == ident(pr) for y in x.pre.premises)]})
         return qs
 
-    def answer_premise(self, premise_text: str, choice: str, supplement: str = "", *, cutoff: Optional[str] = None) -> None:
-        """回答一个前提。措辞相同但截止点不同的前提是不同的前提：必须用 cutoff 指明是哪一个。"""
+    def answer_premise(self, premise_text: str, choice: str, supplement: str = "", *, cutoff: Optional[str] = None,
+                       anchor_event: Optional[str] = None) -> None:
+        """回答一个前提。前提的身份是（措辞，标志事件，截止点）：措辞相同但另两项不同的是不同的前提，
+        必须用 anchor_event / cutoff 指明回答的是哪一个。"""
         cands = {(pr.text, pr.anchor_event, pr.cutoff) for p in self.matched() for pr in p.pre.premises if pr.text == premise_text}
         if cutoff is not None:
             cands = {c for c in cands if c[2] == cutoff}
+        if anchor_event is not None:
+            cands = {c for c in cands if c[1] == anchor_event}
         if len(cands) > 1:
-            raise EngineError(f"前提“{premise_text}”有多个不同的截止点 {sorted(c[2] for c in cands)}，请用 cutoff 指明回答的是哪一个")
+            raise EngineError(f"前提“{premise_text}”有多个不同的（标志事件，截止点）{sorted((c[1], c[2]) for c in cands)}，"
+                              f"请用 anchor_event / cutoff 指明回答的是哪一个")
         if not cands:
             raise EngineError("没有匹配的前提")
         target = next(iter(cands))
@@ -158,7 +167,7 @@ class SettlementSession:
         itv = next((i for i in self.w.interventions.values() if i.interaction_id == self.iid), None)
         if itv is None:
             return
-        premise_text = f"{pr.text}｜{pr.cutoff}"  # 同一措辞、不同截止点的前提分别记
+        premise_text = f"{pr.text}｜{pr.anchor_event}｜{pr.cutoff}"  # 同一措辞、不同标志事件/截止点的前提分别记
         marker = pr.anchor_event or pr.cutoff
         status = dict(pr.choices or DEFAULT_CHOICES)[choice]
         named = [i for i in itv.prepared_items if i in supplement]
@@ -182,8 +191,12 @@ class SettlementSession:
             if not ps:
                 raise EngineError("没有可结算的预测")
             kinds = {(x.pre.behavior_key, x.pre.def_version) for x in ps}
-            if len(kinds) > 1:  # 一次只确认一种行为的结果，否则会结算一半
-                raise EngineError(f"这个机会有多种行为的预测 {sorted(k[0] for k in kinds)}；请用 behavior_key 指明按哪一种行为结算")
+            if len(kinds) > 1:  # 一次只确认一个（行为，版本）的结果，否则会结算一半
+                keys = sorted({k[0] for k in kinds})
+                if len(keys) > 1 and self.behavior_key is None:
+                    raise EngineError(f"这个机会有多种行为的预测 {keys}；请用 behavior_key 指明按哪一种行为结算")
+                raise EngineError(f"行为 {sorted(kinds)} 有多个定义版本的预测；请用 def_version 指明按哪一个版本结算"
+                                  f"（构造 SettlementSession 时传 behavior_key 和 def_version）")
             p = ps[0]
             self._beh = (self.eng.behaviors[(p.pre.behavior_key, p.pre.def_version)], p.pre)
         return self._beh
@@ -221,14 +234,19 @@ class SettlementSession:
                 "criterion": d.get("criterion_used")}
 
     # —— 6. 用户确认 → 各预测分别结算 ——
-    def confirm_outcome(self, outcome=None, *, unobservable: bool = False) -> dict:
+    def confirm_outcome(self, outcome=None, *, unobservable: bool = False, supported_by: tuple = ()) -> dict:
+        """supported_by：你明确指出“这几条已确认的观察就是结果的依据”。全部是当时记录时，结果不算仅回忆。"""
         beh, _ = self._behavior_for()
         if self.eng.needs_outcome_confirmation(self.iid, beh.key, beh.version):
-            # R10：结果是否“仅由回忆材料支撑”，看首份报告本身的时间（2.5：事件后超过 48 小时才报告 = 回忆），
-            # 而不是看此刻库里有哪些观察（草稿未确认、手动结算时观察集合是空的）；
-            # 同一场会已有“当时记录”的观察时，结果有当时的证据，不算仅回忆。
-            earlier = any(o.interaction_id == self.iid and o.source_mode == "contemporaneous" for o in self.w.observations.values())
-            recalled_only = self.report_mode == "recalled" and not earlier
+            # R10：结果是否“仅由回忆材料支撑”，看结果的依据。默认依据就是这份首份报告：事件后超过 48 小时才报告
+            # = 回忆（2.5）。同一场会里别的当时记录（比如只记了签到）与这个结果无关，不能让它变成可计入；
+            # 只有你明确用 supported_by 指出当时的记录就是依据，才算有当时的证据。
+            byid = {o.id: o for o in self.w.observations.values()}
+            cited = [byid[i] for i in supported_by if i in byid]
+            if supported_by and len(cited) != len(supported_by):
+                raise EngineError("supported_by 里有不存在的观察")
+            has_contemporaneous = bool(cited) and all(o.source_mode == "contemporaneous" for o in cited)
+            recalled_only = self.report_mode == "recalled" and not has_contemporaneous
             spans = (self.proposal["span"],) if self.proposal and self.proposal.get("span") else \
                 ({"message_id": self.report_mid, "start": 0, "end": len(self.report_text)},)
             chosen = outcome if outcome is not None else (self.proposal or {}).get("outcome")

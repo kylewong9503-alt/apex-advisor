@@ -610,10 +610,10 @@ class World:
         h = self.hypotheses[hid]
         if (dist is None) == (p_hit is None):
             raise WorldError("dist 与 p_hit 二选一")
-        h.behavior_key, h.dist, h.p_hit, h.formal = behavior_key, dist, p_hit, True
         spec = {"kind": "const_dist", "dist": dist} if dist is not None else {"kind": "const_binary", "p": p_hit}
         rule = make_rule(hid, h.statement, behavior_key, spec)
-        self.engine.add_rule(rule)
+        self.engine.add_rule(rule)  # 先让引擎校验（规则已被预测冻结时会抛错），成功之后才改假设，两边保持一致
+        h.behavior_key, h.dist, h.p_hit, h.formal = behavior_key, dist, p_hit, True
         return rule
 
     def link_recall(self, obs_id: str, hyp_id: str) -> None:

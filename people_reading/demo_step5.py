@@ -26,7 +26,8 @@ def build():
 def main() -> None:
     w, st = build()
     (DIR / "step5.html").write_text(render_app(w, st, mode="code", toggle_href="step5_masked.html"), encoding="utf-8")
-    (DIR / "step5_masked.html").write_text(render_app(w, st, mode="masked", toggle_href="step5.html"), encoding="utf-8")
+    masked = render_app(w, st, mode="masked", toggle_href="step5.html").replace("href='?mask=off'", "href='step5.html'")
+    (DIR / "step5_masked.html").write_text(masked, encoding="utf-8")  # 静态演示才这样替换；真实应用里由后端处理
     print("已写入", DIR / "step5.html", "和", DIR / "step5_masked.html")
 
 

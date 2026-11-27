@@ -40,6 +40,7 @@ class Store:
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        self._migrate()
         row = self.db.execute("SELECT v FROM meta WHERE k='salt'").fetchone()
         if row is None:
             salt = crypto.new_salt()
@@ -52,6 +53,24 @@ class Store:
             chk = self.db.execute("SELECT v FROM meta WHERE k='check'").fetchone()["v"]
             if crypto.dec_text(self.key, chk, "meta") != crypto.CHECK_PLAIN:
                 raise crypto.WrongPassphrase("口令错误")
+
+    def _migrate(self) -> None:
+        """旧版数据库升级：CREATE TABLE IF NOT EXISTS 不会给已有的表加列，这里按 SCHEMA 的声明补上缺的列
+        （只增不删；新列按声明顺序追加在表尾，与位置式 INSERT 的列序一致；旧行的新列为 NULL，读取时已按空值处理）。"""
+        import re
+        for stmt in SCHEMA.split(";"):
+            m = re.search(r"CREATE TABLE IF NOT EXISTS (\w+)\((.*)\)", stmt, flags=re.S)
+            if not m:
+                continue
+            table, body = m.group(1), m.group(2)
+            have = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            for part in (x.strip() for x in re.split(r",\s*(?![^()]*\))", body)):
+                if not part or part.upper().startswith("PRIMARY"):
+                    continue
+                col, _, typ = part.partition(" ")
+                if col not in have:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ.split()[0] if typ else ''}")
+        self.db.commit()
 
     def close(self) -> None:
         self.db.close()

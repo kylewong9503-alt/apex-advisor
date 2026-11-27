@@ -239,11 +239,13 @@ class Intake:
         return did
 
     def _facts_for(self, iid: str) -> dict:
-        """该互动已知的事实。重新打开后 self.facts 是空的，从已有的机会里还原。"""
-        if iid not in self.facts:
-            s = self.world.stat_opps.get(f"OPP-{iid}")
-            self.facts[iid] = ({"cross_dept": s.cross_dept, "submitter": s.target_id, "responsible_named": s.responsible_named}
-                               if s else {"cross_dept": None, "submitter": None, "responsible_named": None})
+        """该互动已知的事实。已有机会时以 World 里的为准（用户确认过的更正在那里，缓存可能是旧的）；
+        还没有机会时才用本地缓存。"""
+        s = self.world.stat_opps.get(f"OPP-{iid}")
+        if s is not None:
+            self.facts[iid] = {"cross_dept": s.cross_dept, "submitter": s.target_id, "responsible_named": s.responsible_named}
+        elif iid not in self.facts:
+            self.facts[iid] = {"cross_dept": None, "submitter": None, "responsible_named": None}
         return self.facts[iid]
 
     def _fact_text(self, v) -> str:

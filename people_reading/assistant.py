@@ -166,6 +166,7 @@ class Assistant:
                             source_spans=({"message_id": p["message_id"]},), reason="用户更正",
                             preview_token=p["preview"]["token"])
         self.intake.store.sync_world(self.w)
+        self.intake.facts.pop(p["opp"].removeprefix("OPP-"), None)  # 本地缓存作废，下次从 World 读
         changed = [i for i in p["preview"]["interpretations"] if self.w.interpretation_changed(i)]
         msg = f"已更正 {p['opp']} 的提交人，并重算。" + (f"依据已变化的解读：{'、'.join(changed)}。" if changed else "")
         self._say(cid, msg, "correction_applied")
