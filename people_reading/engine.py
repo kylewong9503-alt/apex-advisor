@@ -486,9 +486,10 @@ class Engine:
             return False
         # 结算实际用的是 frozen_rules，哈希必须覆盖它：逐条核对它们的定义与规格仍是锁定时的
         fr = self.preds[pid].frozen_rules
-        for rid, definition, spec in pre.rule_defs:
+        for entry in pre.rule_defs:
+            rid, definition, *rest = entry  # 旧版保存的预测每项只有（id, 定义）两个字段：没有规格可核对，只核对定义
             r = fr.get(rid)
-            if r is None or r.definition != definition or _canon(r.spec) != spec:
+            if r is None or r.definition != definition or (rest and _canon(r.spec) != rest[0]):
                 return False
         return True
 
@@ -595,7 +596,14 @@ class Engine:
         ok.sort(key=lambda p: (p.pre.bind_mode != "specific_item", p.pre.locked_at))
         return ok[0] if ok else None
 
+    def _assert_intact(self, opp_id: str) -> None:
+        """重算（含更正预览与确认）依赖已结算预测的冻结规则；冻结内容与哈希不一致时拒绝，不静默采用被改过的规则。"""
+        for p in self._settled_on(opp_id):
+            if not self.verify_hash(p.id):
+                raise EngineError(f"预测 {p.id} 的冻结内容与锁定时的哈希不一致，拒绝重算")
+
     def _compute_rows(self, opp_id: str, facts: dict, corrected: bool) -> dict:
+        self._assert_intact(opp_id)
         rule_ids = sorted({r for p in self._settled_on(opp_id) for r in p.rule_snaps})
         out: dict[tuple, PairRow] = {}
         for h1, h2 in combinations(rule_ids, 2):

@@ -496,3 +496,113 @@ def test_g9_stale_preview_token_cannot_be_revived_by_reverting_the_value():
     assert e.opps["O"].facts["n"] == 0
     with pytest.raises(EngineError):
         e.apply_correction("O", "n", 2, confirmed_by_user=True, preview_token=stale)
+
+
+# ═════════ 第三轮审查（对 03d6e00）：5 条 ═════════
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import sqlite3  # noqa: E402
+
+from people_reading import crypto  # noqa: E402
+from people_reading.engine import _canon  # noqa: E402
+
+
+# A 更正重算不能接受哈希失配的冻结规则
+def test_h1_correction_refuses_tampered_frozen_rules():
+    e, ra, rb = locked_engine()
+    e.confirm_outcome("O", "ask_owner", 1, False)
+    e.settle_prediction("P", {})
+    key = ("O", "ask_owner", "RA", "RB")
+    assert e.rows[key].status == "counted"
+    p = e.preds["P"]
+    p.frozen_rules = {"RA": make_rule("RA", "总是追问", "ask_owner", {"kind": "const_binary", "p": 0.2}, definition=ra.definition),
+                      "RB": p.frozen_rules["RB"]}
+    assert not e.verify_hash("P")
+    with pytest.raises(EngineError):
+        e.correction_preview("O", "cross_dept", False)
+    tok = None
+    e._previews.add("x")  # 绕过预览令牌，直接验证重算本身也拒绝
+    with pytest.raises(EngineError):
+        e.recompute("O", "测试")
+    assert e.rows[key].status == "counted"  # 比较行没被篡改后的规则改写
+
+
+# B supported_by 只能指本场会议的观察，并且依据要进入结果的 source_spans
+def test_h2_supported_by_must_belong_to_this_interaction_and_enters_source_spans(tmp_path):
+    w, st, it, sess = T.shortcut(tmp_path, [T.report_out(), T.proposal()])
+    other = w.add_observation("MTG-OTHER", ("另一场会的签到",), "behavior", SELF, "F", "另一场会的签到", source_mode="contemporaneous")
+    sess.submit_report("c1", T.REPORT, hours_since_event=72)
+    sess.answer_premise(T.Q_PREMISE, "都没有")
+    with pytest.raises(EngineError):
+        sess.confirm_outcome(supported_by=(other.id,))  # 别的会议的观察不能充当本场结果的依据
+    assert ("MTG-F-1", "first_q_topic", 1) not in w.engine.outcomes  # 失败时什么也没写
+    mine = w.add_observation("MTG-F-1", ("当天记：他先问专家要解决什么问题",), "behavior", SELF, "F", "当天记：他先问专家要解决什么问题",
+                             source_mode="contemporaneous")
+    sess.confirm_outcome(supported_by=(mine.id,))
+    rec = w.engine.outcomes[("MTG-F-1", "first_q_topic", 1)]
+    assert rec.recalled_only is False and "当天记：他先问专家要解决什么问题" in rec.source_spans  # 证据链里有它
+
+
+# C 错误口令不能改动数据库
+def test_h3_wrong_passphrase_does_not_migrate_or_write(tmp_path):
+    p = str(tmp_path / "old.db")
+    st = Store(p, PASS)
+    st.new_conversation("c", "t")
+    st.db.execute("ALTER TABLE observation DROP COLUMN summary")
+    st.db.execute("DROP TABLE entity")
+    st.db.commit(); st.close()
+    with pytest.raises(crypto.WrongPassphrase):
+        Store(p, "错的口令")
+    db = sqlite3.connect(p)
+    cols = {r[1] for r in db.execute("PRAGMA table_info(observation)")}
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    db.close()
+    assert "summary" not in cols and "entity" not in tables  # 口令不对：一个字节都没改
+    Store(p, PASS).close()  # 口令对了才升级
+    db = sqlite3.connect(p)
+    assert "summary" in {r[1] for r in db.execute("PRAGMA table_info(observation)")}
+
+
+# D 旧版保存的预测（rule_defs 每项两个字段）升级后仍能结算
+def test_h4_legacy_two_field_rule_defs_still_settle():
+    e, ra, rb = locked_engine()
+    d = e.to_dict()
+    pd = d["preds"][0]
+    legacy = [[r[0], r[1]] for r in pd["pre"]["rule_defs"]]  # 旧版：(id, definition)
+    pd["pre"]["rule_defs"] = legacy
+    pre = pd["pre"]
+    content = dict(
+        id=pre["id"], person_id=pre["person_id"], matter_id=pre["matter_id"], behavior_key=pre["behavior_key"],
+        def_version=pre["def_version"], outcome_type=pre["outcome_type"], frozen_categories=pre["frozen_categories"],
+        settlement_criterion=pre["settlement_criterion"], bind_mode=pre["bind_mode"],
+        bound_opportunity_id=pre["bound_opportunity_id"], conditions=tuple(tuple(c) for c in pre["conditions"]),
+        premises=tuple(), prob=pre["prob"], prob_dist=pre["prob_dist"], baseline_prob=pre["baseline_prob"],
+        baseline_dist=pre["baseline_dist"], baseline_note=pre["baseline_note"], threshold=pre["threshold"],
+        window=pre["window"], rule_defs=tuple(tuple(r) for r in legacy))
+    pre["content_hash"] = hashlib.sha256(_canon(content).encode()).hexdigest()  # 旧版算出的哈希
+    pd.pop("frozen")  # 旧版没有冻结表
+    e2 = Engine.from_dict(json.loads(json.dumps(d)))
+    assert e2.verify_hash("P")
+    e2.confirm_outcome("O", "ask_owner", 1, False)
+    e2.settle_prediction("P", {})
+    assert e2.preds["P"].st.status == "settled" and e2.rows[("O", "ask_owner", "RA", "RB")].status == "counted"
+
+
+# E 不同前提的标志事件，是否发生要分别判断
+def test_h5_each_premise_gets_its_own_anchor_occurrence(tmp_path):
+    prop = {"observable": True, "outcome": "其他", "basis_quote": "没有首问", "criterion_used": "其他",
+            "anchors": {"首次提问": False, "首次表决": True}}
+    w, st, it, sess = T.shortcut(tmp_path, [T.report_out(), prop])
+    mk = lambda anchor: Premise("p", "未展示材料", anchor_event=anchor, cutoff="散会",  # noqa: E731
+                                question=f"在{anchor}之前，你展示过材料吗？", cutoff_question=f"到散会前，你展示过材料吗？",
+                                choices=(("成立", "holds"), ("不成立", "violated")))
+    e = w.engine
+    e.preds.pop("P-F1")
+    e.lock_prediction(id="PA", person_id="F", matter_id="MT1", behavior_key="first_q_topic", bind_mode="specific_item",
+                      opportunity_id="MTG-F-1", rules=[e.rules["H1"], e.rules["H2"]], premises=(mk("首次提问"),), prob_dist=T.DIST_P)
+    e.lock_prediction(id="PB", person_id="F", matter_id="MT1", behavior_key="first_q_topic", bind_mode="condition_match",
+                      conditions={"with": "F"}, rules=[e.rules["H1"], e.rules["H2"]], premises=(mk("首次表决"),), prob_dist=T.DIST_P)
+    sess.submit_report("c1", "没有首问，但发生了表决")
+    qs = {q["anchor_event"]: q["question"] for q in sess.premise_questions()}
+    assert qs["首次提问"] == "到散会前，你展示过材料吗？"  # 首问没发生 → 按截止点问
+    assert qs["首次表决"] == "在首次表决之前，你展示过材料吗？"  # 表决发生了 → 照常问

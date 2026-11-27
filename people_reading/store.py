@@ -39,9 +39,22 @@ class Store:
         self.path = path
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
+        # 先验口令，再做任何写操作（建表、补列）：口令错误时数据库一个字节都不能变
+        row = None
+        if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone():
+            row = self.db.execute("SELECT v FROM meta WHERE k='salt'").fetchone()
+            if row is not None:
+                key = crypto.derive_key(passphrase, bytes.fromhex(row["v"]))
+                chk = self.db.execute("SELECT v FROM meta WHERE k='check'").fetchone()["v"]
+                try:
+                    ok = crypto.dec_text(key, chk, "meta") == crypto.CHECK_PLAIN
+                except crypto.WrongPassphrase:
+                    ok = False
+                if not ok:
+                    self.db.close()
+                    raise crypto.WrongPassphrase("口令错误")
         self.db.executescript(SCHEMA)
         self._migrate()
-        row = self.db.execute("SELECT v FROM meta WHERE k='salt'").fetchone()
         if row is None:
             salt = crypto.new_salt()
             self.key = crypto.derive_key(passphrase, salt)

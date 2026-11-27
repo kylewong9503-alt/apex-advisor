@@ -37,6 +37,10 @@ def validate_proposal(categories: Optional[tuple]):
             errs.append("observable 必须是布尔")
         if d.get("anchor_occurred") is not None and not isinstance(d.get("anchor_occurred"), bool):
             errs.append("anchor_occurred 必须是布尔或 null")
+        an = d.get("anchors")
+        if an is not None and not (isinstance(an, dict) and all(isinstance(k, str) and (v is None or isinstance(v, bool))
+                                                                  for k, v in an.items())):
+            errs.append("anchors 必须是 {标志事件: 是否发生(布尔或 null)}")
         if d.get("observable"):
             if categories is not None and d.get("outcome") not in categories:
                 errs.append(f"outcome 必须属于 {list(categories)}")
@@ -51,7 +55,8 @@ def validate_proposal(categories: Optional[tuple]):
 
 
 SYSTEM_PROPOSE = """你在帮用户按事前写好的标准判断会谈的实际结果。只输出 JSON：
-{"observable": 能否从用户的话判断(没听见/无法判断为 false), "outcome": 类别名或布尔, "anchor_occurred": 前提里的标志事件是否发生过(如“F 是否提出过实质性问题”，不确定为 null),
+{"observable": 能否从用户的话判断(没听见/无法判断为 false), "outcome": 类别名或布尔,
+ "anchors": {提示里列出的每个标志事件: 它是否发生过(不确定为 null)}，每个标志事件分别判断，不要合并,
  "basis_quote": 逐字摘自用户原话的依据片段, "criterion_used": 你对照的那条判定标准原文}
 必须严格按给定的类别判定标准、no_event_rule、multi_topic_rule 归类；整场没发生该行为按 no_event_rule；不得自创类别。"""
 
@@ -114,8 +119,17 @@ class SettlementSession:
         return reply
 
     # —— 4. 前提核对 ——
-    def _anchor_occurred(self) -> Optional[bool]:
-        return None if self.proposal is None else self.proposal.get("anchor_occurred")
+    def _anchors(self) -> set:
+        return {pr.anchor_event for p in self.matched() for pr in p.pre.premises if pr.anchor_event}
+
+    def _anchor_occurred(self, pr: Premise) -> Optional[bool]:
+        """这个前提的标志事件是否发生过。不同前提的标志事件各自判断；只有一个标志事件时兼容旧的 anchor_occurred。"""
+        d = self.proposal or {}
+        if isinstance(d.get("anchors"), dict) and pr.anchor_event in d["anchors"]:
+            return d["anchors"][pr.anchor_event]
+        if "anchor_occurred" in d and len(self._anchors()) <= 1:
+            return d["anchor_occurred"]
+        return None  # 不知道就按“发生过”问，不替用户猜
 
     def premise_questions(self) -> list:
         """结算卡必须先问：只有 prepared_items 而 execution_log 为空时，不得默认前提成立。"""
@@ -126,7 +140,7 @@ class SettlementSession:
                 if ident(pr) in seen:
                     continue  # 完全相同的前提只问一次；截止点不同的是不同的前提，要分别问
                 seen.add(ident(pr))
-                q = pr.cutoff_question if (self._anchor_occurred() is False and pr.cutoff_question) else \
+                q = pr.cutoff_question if (self._anchor_occurred(pr) is False and pr.cutoff_question) else \
                     (pr.question or f"关于“{pr.text}”，实际情况是？")
                 qs.append({"premise_id": pr.id, "premise_text": pr.text, "cutoff": pr.cutoff, "anchor_event": pr.anchor_event,
                            "question": q,
@@ -208,7 +222,8 @@ class SettlementSession:
         cats = tuple(beh.categories) if beh.outcome_type == "categorical" else None
         crit = dict(beh.category_criteria) if cats else pre.settlement_criterion
         prompt = (f"行为：{beh.description}\n结果空间与判定标准：{crit}\n整场未出现时：{beh.no_event_rule}\n"
-                  f"一句话涉及多个类别时：{beh.multi_topic_rule}\n用户原话：{self.report_text}")
+                  f"一句话涉及多个类别时：{beh.multi_topic_rule}\n"
+                  f"需要分别判断是否发生的标志事件：{sorted(self._anchors())}\n用户原话：{self.report_text}")
         try:
             d = self.model.structured(SYSTEM_PROPOSE, prompt, validate_proposal(cats))
         except Exception:
@@ -245,10 +260,14 @@ class SettlementSession:
             cited = [byid[i] for i in supported_by if i in byid]
             if supported_by and len(cited) != len(supported_by):
                 raise EngineError("supported_by 里有不存在的观察")
+            if any(o.interaction_id != self.iid for o in cited):
+                raise EngineError("supported_by 只能指本场会谈的观察；别的会议的记录不能充当这个结果的依据")
             has_contemporaneous = bool(cited) and all(o.source_mode == "contemporaneous" for o in cited)
             recalled_only = self.report_mode == "recalled" and not has_contemporaneous
             spans = (self.proposal["span"],) if self.proposal and self.proposal.get("span") else \
                 ({"message_id": self.report_mid, "start": 0, "end": len(self.report_text)},)
+            for o in cited:  # 你指出的当时记录就是依据：它的原话也进入结果的证据链
+                spans += tuple(sp for sp in o.source_spans if sp not in spans)
             chosen = outcome if outcome is not None else (self.proposal or {}).get("outcome")
             if unobservable or (self.proposal and self.proposal.get("observable") is False and outcome is None):
                 self.eng.confirm_outcome(self.iid, beh.key, beh.version, None, status="unobservable", source_spans=spans)
