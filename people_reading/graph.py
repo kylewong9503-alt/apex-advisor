@@ -68,17 +68,27 @@ def render_svg(g: dict, width: int = 640) -> str:
     cx, cy, rad = width / 2, 150, 110
     pos = {nd["id"]: (cx + rad * math.cos(2 * math.pi * i / max(n, 1) - math.pi / 2),
                       cy + rad * math.sin(2 * math.pi * i / max(n, 1) - math.pi / 2)) for i, nd in enumerate(g["nodes"])}
+    # 节点框宽度随文字长度（中文约 11px/字，留边），线条只画到框的边缘，不穿过框里的字
+    half = {nd["id"]: max(70, (len(nd["label"]) * 11 + 16) / 2) for nd in g["nodes"]}
+
+    def edge_pt(a, b):
+        (x1, y1), (x2, y2) = pos[a], pos[b]
+        dx, dy = x2 - x1, y2 - y1
+        t = min((half[a] / abs(dx)) if dx else 1e9, (15 / abs(dy)) if dy else 1e9)  # 从 a 的框边缘出发
+        return x1 + dx * t, y1 + dy * t
     e = html.escape
     out = [f"<svg viewBox='0 0 {width} 320' width='100%' role='img' aria-label='{e(g['matter'])} 关系图'>",
            "<defs><marker id='ar' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0,0 L8,4 L0,8 z' fill='currentColor'/></marker></defs>"]
     for ed in g["edges"]:
-        (x1, y1), (x2, y2) = pos[ed["from"]], pos[ed["to"]]
+        (x1, y1), (x2, y2) = edge_pt(ed["from"], ed["to"]), edge_pt(ed["to"], ed["from"])
         dash = " stroke-dasharray='6 4'" if ed["style"] == "dashed" else ""
         out.append(f"<line x1='{x1:.0f}' y1='{y1:.0f}' x2='{x2:.0f}' y2='{y2:.0f}' stroke='currentColor'{dash} marker-end='url(#ar)'/>")
-        out.append(f"<text x='{(x1 + x2) / 2:.0f}' y='{(y1 + y2) / 2 - 4:.0f}' font-size='12' text-anchor='middle' fill='currentColor'>{e(ed['label'])}</text>")
+        # 标签带底色描边，压在线上也看得清
+        out.append(f"<text x='{(x1 + x2) / 2 + 8:.0f}' y='{(y1 + y2) / 2:.0f}' font-size='12' text-anchor='start' fill='currentColor' "
+                   f"stroke='var(--bg, #fff)' stroke-width='4' paint-order='stroke'>{e(ed['label'])}</text>")
     for nd in g["nodes"]:
         x, y = pos[nd["id"]]
-        out.append(f"<g><rect x='{x - 70:.0f}' y='{y - 15:.0f}' width='140' height='30' rx='6' fill='none' stroke='currentColor'/>"
+        out.append(f"<g><rect x='{x - half[nd['id']]:.0f}' y='{y - 15:.0f}' width='{half[nd['id']] * 2:.0f}' height='30' rx='6' fill='none' stroke='currentColor'/>"
                    f"<text x='{x:.0f}' y='{y + 4:.0f}' font-size='11' text-anchor='middle' fill='currentColor'>{e(nd['label'])}</text></g>")
     out.append("</svg>")
     det = []

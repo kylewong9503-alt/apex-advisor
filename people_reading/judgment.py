@@ -48,7 +48,8 @@ def judgment_card(w: World, hid: str, store=None, label_time: Callable[[int], st
         beh = eng.behaviors[(r.behavior_key, src.pre.def_version)]
         rec = eng.outcomes[(k[0], r.behavior_key, src.pre.def_version)]
         label = rec.outcome if beh.outcome_type == "categorical" else (beh.event_label if rec.outcome else f"没有{beh.event_label}")
-        actual.update(text=f"{name}的{beh.description}归入“{label}”。" if beh.outcome_type == "categorical"
+        # 行为描述本身带主语（如“F 的第一个实质性问题涉及的主题”），所以不再另加人名前缀
+        actual.update(text=f"{beh.description}归入“{label}”。" if beh.outcome_type == "categorical"
                       else f"{name}：{label}。", quotes=[_quote(store, s) for s in rec.source_spans])
     # 行 2：事前预测（唯一计入累计的一行）
     pre = {"label": ROWS[1], "text": "尚无事前预测" if not h.formal else "已形成规则，等待结果", "counts": True}
