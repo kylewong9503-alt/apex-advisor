@@ -76,3 +76,6 @@ model = make_model()                  # 按 PR_PROVIDER 返回 LocalModel 或 Re
 ## 部署（deploy/）
 `bash deploy/install.sh` 在服务器上装好服务（systemd，专用低权限用户，库目录 700）。不带域名只监听本机，用 SSH 隧道访问；带域名会装 Caddy 提供 HTTPS。
 首次必须用 `--init` 在命令行创建加密库（口令 ≥10 位）；库不存在时服务拒绝启动，避免第一个打开页面的人给新库设口令。
+
+## 只有 iPad 时：GitHub Codespaces
+在 github.com 的仓库页（本分支）点 Code → Codespaces → Create，打开浏览器里的终端，运行 `bash deploy/codespaces.sh`；端口 8765 默认私有，只有你登录的 GitHub 账号能打开。模型密钥放在 GitHub 的 Codespaces secrets（PR_PROVIDER、PR_ALLOW_EXTERNAL、DEEPSEEK_API_KEY），不要写进文件。

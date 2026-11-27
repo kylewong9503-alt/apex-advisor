@@ -392,3 +392,9 @@ def test_inter_font_served_locally_without_login_and_csp_allows_only_self(srv):
     assert "font-src 'self'" in h["Content-Security-Policy"] and "inter.woff2" in page
     assert "fonts.googleapis" not in page and "https://" not in page
     assert "Inter" in page and "Noto Sans SC" in page
+
+
+def test_codespaces_host_only_inside_codespaces():
+    from people_reading.server import codespaces_host
+    assert codespaces_host({}) == "" and codespaces_host({"CODESPACE_NAME": "x"}) == ""
+    assert codespaces_host({"CODESPACE_NAME": "fuzzy-fiesta-1", "GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN": "app.github.dev"}) == "fuzzy-fiesta-1-8765.app.github.dev"

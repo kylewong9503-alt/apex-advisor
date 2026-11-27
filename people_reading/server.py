@@ -41,6 +41,12 @@ MANIFEST = ('{"name":"Kagami","short_name":"Kagami","start_url":"/","display":"s
 HEAD_EXTRA = "<link rel='manifest' href='/manifest.webmanifest'><meta name='theme-color' content='#1f3b61'><link rel='icon' href='/icon.svg'>"
 
 
+def codespaces_host(env: dict, port: int = 8765) -> str:
+    """GitHub Codespaces 的端口转发域名，例如 <CODESPACE_NAME>-8765.app.github.dev；不在 Codespaces 里返回空串。"""
+    name, dom = env.get("CODESPACE_NAME"), env.get("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN")
+    return f"{name}-{port}.{dom}" if name and dom else ""
+
+
 def is_loopback(host: str) -> bool:
     try:
         return ipaddress.ip_address(host).is_loopback
@@ -701,6 +707,11 @@ if __name__ == "__main__":  # python -m people_reading.server --db my.db [--host
     if not os.path.exists(a.db):  # 否则第一个打开页面的人就能给新库设口令
         raise SystemExit("库不存在。先运行：python -m people_reading.server --db %s --init" % a.db)
     mdl = make_model()  # PR_PROVIDER=local（默认）| deepseek；deepseek 还需 PR_ALLOW_EXTERNAL=1 与 DEEPSEEK_API_KEY
+    cs = codespaces_host(dict(os.environ), a.port)
+    if cs:
+        a.allow_host.append(cs)  # 只放行这个 Codespace 的转发域名；端口默认私有，只有你登录的 GitHub 账号能打开
     s = serve(a.db, a.host, a.port, allow_remote=a.allow_remote, allowed_hosts=a.allow_host, model=mdl)
+    if cs:
+        print(f"打开： https://{cs}")
     print(f"http://{a.host}:{a.port}  （口令在浏览器里输入，不经命令行）  模型：{mdl!r}")
     s.serve_forever()
