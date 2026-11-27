@@ -80,15 +80,27 @@ def wave_band(r: int = 10, rings: int = 3, width: int = 960) -> str:
     return "".join(parts)
 
 
-# 标志：一面柄镜（Kagami = 鏡）。极简几何：藍底、白色镜面与镜柄、两道斜向反光（实心镜面，避免读成放大镜）。只用两种颜色。
+# 标志：镜中人（Kagami = 鏡）。白底，天蓝色的椭圆镜框由两笔流动的弧线构成（一粗一细、首尾不闭合），
+# 镜中一个张开双臂的人形，浅一档的蓝色。只用蓝白两色。
+SKY, SKY_LIGHT = "#1e9fd6", "#74ccef"
+
+
 def mark_svg(size: int = 64, *, title: str = "") -> str:
     lab = f"<title>{title}</title>" if title else ""
     aria = "role='img' aria-label='Kagami'" if title else "aria-hidden='true' focusable='false'"
     return (f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' width='{size}' height='{size}' {aria}>{lab}"
-            "<rect width='64' height='64' rx='14' fill='#1f3b61'/>"
-            "<circle cx='32' cy='27' r='16' fill='#ffffff'/>"
-            "<rect x='29' y='41' width='6' height='13' rx='3' fill='#ffffff'/>"
-            "<path d='M23 27l9-9M27 31l9-9' stroke='#1f3b61' stroke-width='2.6' stroke-linecap='round' opacity='.35'/></svg>")
+            "<rect width='64' height='64' rx='14' fill='#ffffff'/>"
+            # 镜框：两个错位椭圆相减得到一弯由粗到细的月牙，自带笔触感；外侧再甩一道细弧
+            "<g transform='rotate(-22 32 32)'>"
+            f"<path fill-rule='evenodd' fill='{SKY}' d='M32 9a18 23.5 0 1 0 .01 0zM33.6 12.2a15.4 20.6 0 1 0 .01 0z'/>"
+            f"<path d='M17.5 16.5C21 11.5 27 9 33 9.2' fill='none' stroke='#ffffff' stroke-width='3.2' stroke-linecap='round'/>"
+            f"<path d='M12.6 22.5C14 16 19.5 10.6 26 8.4' fill='none' stroke='{SKY}' stroke-width='1.7' stroke-linecap='round'/>"
+            "</g>"
+            # 镜中人：头、扬起的双臂（一道月牙）、向下收的身体（一道飘带）
+            f"<circle cx='35' cy='21.5' r='4' fill='{SKY_LIGHT}'/>"
+            f"<path d='M21 29.5Q33.5 37.5 46 18.5Q36 31 21 29.5z' fill='{SKY_LIGHT}'/>"
+            f"<path d='M34.5 31Q40 40 29.5 50Q34.5 40 28 32.5z' fill='{SKY_LIGHT}'/>"
+            "</svg>")
 
 
 def mark_data_uri() -> str:
