@@ -85,7 +85,7 @@ def render_svg(g: dict, width: int = 640) -> str:
         out.append(f"<line x1='{x1:.0f}' y1='{y1:.0f}' x2='{x2:.0f}' y2='{y2:.0f}' stroke='currentColor'{dash} marker-end='url(#ar)'/>")
         # 标签带底色描边，压在线上也看得清
         out.append(f"<text x='{(x1 + x2) / 2 + 8:.0f}' y='{(y1 + y2) / 2:.0f}' font-size='12' text-anchor='start' fill='currentColor' "
-                   f"stroke='var(--bg, #fff)' stroke-width='4' paint-order='stroke'>{e(ed['label'])}</text>")
+                   f"stroke='var(--surface, #fff)' stroke-width='4' paint-order='stroke'>{e(ed['label'])}</text>")
     for nd in g["nodes"]:
         x, y = pos[nd["id"]]
         out.append(f"<g><rect x='{x - half[nd['id']]:.0f}' y='{y - 15:.0f}' width='{half[nd['id']] * 2:.0f}' height='30' rx='6' fill='none' stroke='currentColor'/>"

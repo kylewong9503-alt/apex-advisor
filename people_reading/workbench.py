@@ -11,22 +11,16 @@ from typing import Optional
 from .graph import build_matter_graph, render_svg
 from .judgment import judgment_card
 from .settle_flow import SettlementSession
+from .theme import BASE_CSS, wave_band
 from .world import World
 
 E = html.escape
-CSS = """:root{--bg:#fff;--fg:#1c1c1e;--mut:#6b6b70;--line:#d8d8de;--card:#f5f5f8;--acc:#2a5bd7}
-@media(prefers-color-scheme:dark){:root{--bg:#161618;--fg:#ececf0;--mut:#9a9aa2;--line:#34343a;--card:#202024;--acc:#7aa2ff}}
-*{box-sizing:border-box}body{background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,"PingFang SC","Noto Sans SC",sans-serif;margin:0}
-main{max-width:720px;margin:0 auto;padding:20px 16px 48px}h1{font-size:20px;margin:0 0 4px}.mut{color:var(--mut);font-size:13px}
-.card{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:10px 14px;margin:10px 0}
-.row{padding:6px 0;border-top:1px solid var(--line)}.row b{display:block;font-size:12px;color:var(--mut)}
-textarea{width:100%;font:inherit;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
-button{font:inherit;padding:4px 10px;margin:2px 4px 2px 0}svg{color:var(--fg)}"""
+CSS = BASE_CSS
 
 
 def page(body: str, title: str = "识人系统") -> str:
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>{E(title)}</title><style>{CSS}</style></head><body><main>{body}</main></body></html>")
+            f"<title>{E(title)}</title><style>{CSS}</style></head><body><main>{wave_band()}{body}</main></body></html>")
 
 
 def render_settlement_page(screen: dict) -> str:
@@ -39,10 +33,11 @@ def card_html(c: dict, rd=None) -> str:
     T = rd.t if rd is not None else (lambda x: x)
     e = lambda x: E(T(x))  # noqa: E731  动态内容：遮挡时不输出原文
     h = c["header"]
-    rows = "".join(f"<div class='row'><b>{E(r['label'])}{'' if r.get('counts') is None else '（计入累计）' if r['counts'] else '（不计入）'}</b>{e(r['text'])}</div>"
+    rows = "".join(f"<div class='row{' recall' if r.get('counts') is False else ''}'><b>{E(r['label'])}{'' if r.get('counts') is None else '（计入累计）' if r['counts'] else '（不计入）'}</b>{e(r['text'])}</div>"
                    for r in c["rows"])
     note = f" · {E(h['note'])}" if h["note"] else ""
-    return (f"<div class='card'><b>{e(h['statement'])}</b><div class='mut'>{E(h['by'])}{note}</div>{rows}"
+    kind = h.get("css", "")
+    return (f"<div class='card {E(kind)}'><b><i class='mk mk-{E(kind)}' aria-hidden='true'></i>{e(h['statement'])}</b><div class='mut'>{E(h['by'])}{note}</div>{rows}"
             f"<div class='mut'>{E(c['badge'])}</div>" + ("<div class='mut'>仍待区分：" + e("；".join(c["pending"])) + "</div>" if c["pending"] else "")
             + "</div>")
 

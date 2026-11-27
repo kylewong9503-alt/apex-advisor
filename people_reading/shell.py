@@ -11,26 +11,30 @@ from .graph import build_matter_graph, render_graph_browser
 from .panels import calibration_panel, render_calibration
 from .privacy import NO_CAPTURE_META, PRINT_GUARD_CSS, Redactor
 from .profile import build_profile, render_html as render_profile
+from .theme import wave_band
 from .workbench import CSS, matter_body, workbench_view
 
 E = html.escape
 
 SHELL_CSS = """
 body{margin:0}.app{display:flex;min-height:100vh}
-aside{width:220px;flex:none;border-right:1px solid var(--line);padding:16px 12px;position:sticky;top:0;height:100vh;overflow:auto}
-aside h4{margin:18px 0 6px;font-size:12px;color:var(--mut);font-weight:600}
-aside a{display:block;padding:6px 8px;border-radius:6px;color:var(--fg);text-decoration:none}aside a.on{background:var(--card);font-weight:600}
-.content{flex:1;min-width:0}.top{display:flex;gap:12px;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line)}
-.top a{color:var(--acc);text-decoration:none;font-size:14px}[data-view]{display:none}[data-view].on{display:block}
-.quads{display:grid;grid-template-columns:1fr 1fr;gap:10px}.quad{border:1px solid var(--line);border-radius:8px;padding:6px 12px;background:var(--card)}
-.quad.wide{margin-top:10px}.quad h3{margin:6px 0;font-size:14px}
-.pcard{display:block;padding:8px 0;border-top:1px solid var(--line);color:var(--fg);text-decoration:none;font-size:14px}
-.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.tab.on{background:var(--acc);color:#fff}.gpanel{display:none}.gpanel.on{display:block}
-table{border-collapse:collapse;width:100%;font-size:13px;display:block;overflow-x:auto}th,td{border:1px solid var(--line);padding:4px 8px;text-align:left}
-nav.bottom{display:none}#drawer{position:fixed;right:0;top:0;bottom:0;width:320px;background:var(--card);border-left:1px solid var(--line);padding:16px;transform:translateX(100%);transition:transform .15s;overflow:auto;z-index:20}
-#drawer.open{transform:none}details{margin:4px 0}
-@media(max-width:720px){aside{display:none}nav.bottom{display:flex;position:fixed;bottom:0;left:0;right:0;border-top:1px solid var(--line);background:var(--bg);z-index:10}
-nav.bottom a{flex:1;text-align:center;padding:12px 4px;color:var(--fg);text-decoration:none}nav.bottom a.on{font-weight:700;color:var(--acc)}
+aside{width:224px;flex:none;background:var(--surface-sunk);border-right:1px solid var(--line);padding:var(--space-6) var(--space-3);position:sticky;top:0;height:100vh;overflow:auto}
+aside .brand{display:block;font:600 20px/28px var(--font-display);letter-spacing:.12em;padding:0 var(--space-2)}
+aside h4{margin:var(--space-6) 0 var(--space-1);padding:0 var(--space-2);font:500 11px/16px var(--font-sans);letter-spacing:.16em;color:var(--ink-muted)}
+aside a{display:block;padding:var(--space-1) var(--space-2);border-radius:var(--radius-sm);color:var(--ink);text-decoration:none;font-size:14px;line-height:24px}
+aside a:hover{background:var(--mizu)}aside a.on{background:var(--mizu);color:var(--ai);font-weight:700}
+.content{flex:1;min-width:0}.top{display:flex;gap:var(--space-3);justify-content:space-between;align-items:center;padding:var(--space-2) var(--space-4);border-bottom:1px solid var(--line)}
+.top a{color:var(--ai);font-size:13px}[data-view]{display:none}[data-view].on{display:block}
+.quads{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-4)}.quad{border-top:1px solid var(--line);padding:var(--space-1) 0}
+.quad.wide{margin-top:var(--space-4)}.quad h3{margin:var(--space-2) 0;font:500 11px/16px var(--font-sans);letter-spacing:.16em;color:var(--ink-muted)}
+.pcard{display:block;padding:var(--space-2) 0;border-top:1px solid var(--line);color:var(--ink);text-decoration:none;font-size:14px}
+.tabs{display:flex;gap:var(--space-2);flex-wrap:wrap;margin:var(--space-2) 0}.tab.on{background:var(--ai);border-color:var(--ai);color:var(--on-ai)}.gpanel{display:none}.gpanel.on{display:block}
+table{border-collapse:collapse;width:100%;font-size:13px;display:block;overflow-x:auto}th,td{border:0;border-bottom:1px solid var(--line);padding:var(--space-1) var(--space-2);text-align:left}th{font:500 11px/16px var(--font-sans);letter-spacing:.12em;color:var(--ink-muted)}
+nav.bottom{display:none}#drawer{position:fixed;right:0;top:0;bottom:0;width:320px;background:var(--surface-raised);border-left:1px solid var(--line);padding:var(--space-4);transform:translateX(100%);transition:transform .15s;overflow:auto;z-index:20}
+#drawer.open{transform:none}details{margin:var(--space-1) 0}
+@media(prefers-reduced-motion:reduce){#drawer{transition:none}}
+@media(max-width:720px){aside{display:none}nav.bottom{display:flex;position:fixed;bottom:0;left:0;right:0;border-top:1px solid var(--line);background:var(--surface-raised);z-index:10}
+nav.bottom a{flex:1;text-align:center;padding:var(--space-3) var(--space-1);color:var(--ink-muted);text-decoration:none;font-size:12px}nav.bottom a.on{font-weight:700;color:var(--ai)}
 main{padding-bottom:72px}.quads{grid-template-columns:1fr}
 #drawer{top:auto;left:0;width:auto;height:45vh;border-left:0;border-top:1px solid var(--line);transform:translateY(100%)}#drawer.open{transform:none}}
 """
@@ -93,10 +97,10 @@ def render_app(w, store=None, *, mode: str = "code", prep=None, conversations: O
     toggle = (f"<a href='{E(href)}'>{'取消遮挡' if masked else '一键遮挡'}</a>" if (toggle_href or masked) else "")
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"<title>{E(title)}</title><meta name='privacy-capture' content='graph'><style>{CSS}{SHELL_CSS}{PRINT_GUARD_CSS}</style></head><body>"
-            f"<div class='app'><aside><b>识人系统</b><h4>导航</h4>{left}<h4>最近对话</h4>{side_convs}"
+            f"<div class='app'><aside><span class='brand'>识人</span><h4>导航</h4>{left}<h4>最近对话</h4>{side_convs}"
             f"<h4>校准</h4><a href='#/calibration' data-nav='calibration'>校准面板</a></aside>"
             f"<div class='content'><div class='top'><span class='mut'>显示：{'已遮挡' if masked else ('代号' if mode == 'code' else '姓名')}</span>"
-            f"<span><a href='#/calibration'>校准面板</a>　{toggle}</span></div><main>"
+            f"<span><a href='#/calibration'>校准面板</a>　{toggle}</span></div><main>{wave_band()}"
             f"<div data-view='workbench'>{wb}</div>"
             f"<div data-view='people'><h1>人物</h1>{q}</div>{person_pages}"
             f"<div data-view='graph'><h1>关系图</h1>{graph}</div>"
