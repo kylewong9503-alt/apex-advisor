@@ -18,7 +18,10 @@ from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
 from .crypto import WrongPassphrase
-from .flow import build_prep_steps, open_ask, render_flow
+from .flow import ask, build_prep_steps, open_ask, render_flow
+from .intake import Intake
+from .llm import RemoteModel, make_model
+from .premeeting import PreMeeting
 from .privacy import AppLock, Locked, Redactor, TooManyAttempts
 from .shell import render_app
 from .workbench import workbench_view
@@ -58,8 +61,15 @@ def unlock_page(msg: str = "") -> str:
 class App:
     """进程内状态：一把锁、一个会话令牌、一个遮挡开关。"""
 
-    def __init__(self, path: str, *, allowed_hosts=(), idle_seconds: float = 300, **kw) -> None:
+    CID = "main"
+
+    def __init__(self, path: str, *, allowed_hosts=(), idle_seconds: float = 300, model=None, **kw) -> None:
         self.lock = AppLock(path, idle_seconds=idle_seconds, **kw)
+        self.model = model  # None = 未配置模型：只能手动，不编造
+        self.w = None
+        self.intake: Optional[Intake] = None
+        self.pms: dict = {}  # 议题 → PreMeeting（模型只在会前页打开时调用一次，失败也缓存，不反复发送）
+        self.pm_failed: set = set()
         self.token: Optional[str] = None
         self.masked = False
         self.allowed_hosts = {h.lower() for h in allowed_hosts}
@@ -72,21 +82,96 @@ class App:
                 return False
             return bool(self.token) and secrets.compare_digest(cookie or "", self.token)
 
+    # —— 解锁后载入世界；上锁后丢弃 ——
+    def on_unlock(self) -> None:
+        store = self.lock.store
+        self.w, _ = store.load_world()
+        self.intake = Intake(store, self.w, self.model)
+        self.intake.adopt_world()
+        self.pms, self.pm_failed = {}, set()
+        if self.CID not in [c for c, _, _ in store.conversations()]:
+            store.new_conversation(self.CID, "对话")
+
+    def on_lock(self) -> None:
+        self.w, self.intake, self.pms, self.pm_failed = None, None, {}, set()
+
+    def _world(self):
+        self.lock.store  # 已上锁会抛 Locked
+        return self.w
+
+    def external(self) -> bool:
+        return isinstance(self.model, RemoteModel)
+
+    def banner(self) -> str:
+        return "外部模型已开启：你在这里输入的原话会发送给 DeepSeek" if self.external() else ""
+
+    def pending_steps(self) -> list:
+        """待确认的草稿：每条一个问题。原话片段由程序定位，这里展示的是原话，不是模型的转述。"""
+        store, steps = self.lock.store, []
+        for d in store.drafts(status="pending", conversation_id=self.CID):
+            quote = " … ".join(store.quote(sp) for sp in d["source_spans"])
+            steps.append(ask("记下这一条吗？", [("记下", "", ""), ("不记", "", "")], cue=f"原话：{quote}", selected=0,
+                             act={"url": "/confirm", "fields": {"id": d["id"]}}))
+        return steps
+
+    def pre_meeting(self, mid: str):
+        if self.model is None or mid in self.pm_failed:
+            return None
+        if mid not in self.pms:
+            w = self._world()
+            itv = next(((i, x) for i, x in reversed(list(w.interactions.items())) if x.get("status") == "planned" and x.get("with")), None)
+            if itv is None:
+                self.pm_failed.add(mid)
+                return None
+            pm = PreMeeting(self.intake, mid, itv[1]["with"], itv[0], self.model)
+            if pm.prepare() is None:
+                self.pm_failed.add(mid)
+                return None
+            self.pms[mid] = pm
+        return self.pms[mid]
+
     def flow_html(self) -> str:
         store = self.lock.store
-        w, _ = store.load_world()
+        w = self._world()
         rd = Redactor(w, "masked" if self.masked else "code")
-        steps = []
-        if w.matters:
+        steps = self.pending_steps()
+        if not steps and w.matters:
             mid = list(w.matters)[-1]
-            steps = build_prep_steps(workbench_view(w, mid, store))
-        steps = steps or [open_ask("今天想记一件什么事？", cue="直接说，不用先选人或填表")]
-        return render_flow(steps, rd=rd, library_href="/library", head_extra=HEAD_EXTRA)
+            pm = self.pre_meeting(mid)
+            v = workbench_view(w, mid, store, prep=pm.prep if pm else None)
+            steps = build_prep_steps(v)
+            if pm and steps and steps[-1]["kind"] == "answer":
+                steps[-1]["buttons"] = [{"label": "记为行动", "act": {"url": "/act", "fields": {"matter": mid}}}] + steps[-1]["buttons"][1:]
+        steps = steps or [open_ask("今天想记一件什么事？", cue="直接说，不用先选人或填表", act={"url": "/say", "fields": {}})]
+        return render_flow(steps, rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner())
 
     def library_html(self) -> str:
         store = self.lock.store
-        w, _ = store.load_world()
-        return render_app(w, store, mode="masked" if self.masked else "code", toggle_href="")
+        return render_app(self._world(), store, mode="masked" if self.masked else "code", toggle_href="")
+
+    # —— 写操作（每个都先确认已解锁；落库后 sync_world）——
+    def say(self, text: str) -> None:
+        text = text.strip()
+        if text and self.intake is not None:
+            self.intake.handle(self.CID, text)
+            self.lock.store.sync_world(self._world())
+
+    def confirm(self, did: str, choice: str) -> None:
+        store = self.lock.store
+        if not any(d["id"] == did and d["status"] == "pending" for d in store.drafts()):
+            raise KeyError(did)
+        if choice == "0":
+            self.intake.confirm(did)
+        else:
+            self.intake.reject(did)
+        store.sync_world(self._world())
+
+    def act(self, mid: str) -> None:
+        pm = self.pms.get(mid)
+        if pm is None or pm.prep is None:
+            raise KeyError(mid)
+        pm.record_action(self._world().matters[mid].purpose, [it["text"] for it in pm.prep.items])
+        self.lock.store.sync_world(self._world())
 
 
 def make_handler(app: App):
@@ -157,9 +242,13 @@ def make_handler(app: App):
                 return self._redirect("/unlock")
             try:
                 if path == "/":
-                    return self._send(200, app.flow_html())
+                    with app.mutex:
+                        body = app.flow_html()
+                    return self._send(200, body)
                 if path == "/library":
-                    return self._send(200, app.library_html())
+                    with app.mutex:
+                        body = app.library_html()
+                    return self._send(200, body)
             except Locked:
                 return self._redirect("/unlock")
             return self._send(404, "not found", "text/plain")
@@ -176,6 +265,7 @@ def make_handler(app: App):
                 try:
                     with app.mutex:
                         app.lock.unlock((form.get("passphrase") or [""])[0])
+                        app.on_unlock()
                         app.token = secrets.token_urlsafe(32)
                         tok = app.token
                 except WrongPassphrase:
@@ -188,21 +278,35 @@ def make_handler(app: App):
             if path == "/lock":
                 with app.mutex:
                     app.lock.lock()
+                    app.on_lock()
                     app.token = None
                 return self._redirect("/unlock", (("Set-Cookie", "sid=; Max-Age=0; Path=/"),))
             if path == "/mask":
                 app.masked = not app.masked
                 return self._redirect("/")
+            try:
+                with app.mutex:
+                    if path == "/say":
+                        app.say((form.get("text") or [""])[0][:4000])
+                    elif path == "/confirm":
+                        app.confirm((form.get("id") or [""])[0], (form.get("choice") or ["1"])[0])
+                    elif path == "/act":
+                        app.act((form.get("matter") or [""])[0])
+                    else:
+                        return self._send(404, "not found", "text/plain")
+            except (KeyError, Locked):
+                return self._send(409, "not applicable", "text/plain")
+            return self._redirect("/")
             return self._send(404, "not found", "text/plain")
     return H
 
 
 def serve(path: str, host: str = "127.0.0.1", port: int = 8765, *, allow_remote: bool = False, allowed_hosts=(),
-          idle_seconds: float = 300) -> http.server.ThreadingHTTPServer:
+          idle_seconds: float = 300, model=None) -> http.server.ThreadingHTTPServer:
     """返回已绑定的服务器（调用方 serve_forever）。非回环地址必须 allow_remote=True，且要在 allowed_hosts 里列出访问用的主机名。"""
     if not is_loopback(host) and not allow_remote:
         raise ValueError("监听非本机地址需要显式 allow_remote=True（并放在 Tailscale 等私有加密通道之后）")
-    app = App(path, allowed_hosts=allowed_hosts, idle_seconds=idle_seconds)
+    app = App(path, allowed_hosts=allowed_hosts, idle_seconds=idle_seconds, model=model)
     srv = http.server.ThreadingHTTPServer((host, port), make_handler(app))
     srv.app = app  # type: ignore[attr-defined]
     return srv
@@ -217,6 +321,7 @@ if __name__ == "__main__":  # python -m people_reading.server --db my.db [--host
     ap.add_argument("--allow-remote", action="store_true")
     ap.add_argument("--allow-host", action="append", default=[])
     a = ap.parse_args()
-    s = serve(a.db, a.host, a.port, allow_remote=a.allow_remote, allowed_hosts=a.allow_host)
-    print(f"http://{a.host}:{a.port}  （口令在浏览器里输入，不经命令行）")
+    mdl = make_model()  # PR_PROVIDER=local（默认）| deepseek；deepseek 还需 PR_ALLOW_EXTERNAL=1 与 DEEPSEEK_API_KEY
+    s = serve(a.db, a.host, a.port, allow_remote=a.allow_remote, allowed_hosts=a.allow_host, model=mdl)
+    print(f"http://{a.host}:{a.port}  （口令在浏览器里输入，不经命令行）  模型：{mdl!r}")
     s.serve_forever()

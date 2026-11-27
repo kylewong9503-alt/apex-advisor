@@ -92,3 +92,72 @@ def test_remote_bind_needs_explicit_opt_in(tmp_path):
 def test_pwa_files_carry_no_data_and_no_service_worker(srv):
     assert req(srv, "GET", "/manifest.webmanifest")[0] == 200 and req(srv, "GET", "/icon.svg")[0] == 200
     assert req(srv, "GET", "/sw.js")[0] in (303, 404)
+
+
+# ───────── 写操作：说一句 → 草稿 → 确认；外部模型提示 ─────────
+def _fresh(tmp_path, outputs, model_cls=None):
+    from people_reading.llm import ScriptedModel
+    path = str(tmp_path / "n.db")
+    Store(path, PW).close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel(outputs))
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    return s
+
+
+def test_say_confirm_flow_writes_only_after_user_confirms(tmp_path):
+    from people_reading.tests import test_step4 as T4
+    s = _fresh(tmp_path, [T4.C1_OUT])
+    try:
+        ck = login(s)
+        st, _, body = req(s, "GET", "/", headers=ck)
+        assert "今天想记一件什么事" in body and "<textarea" in body
+        assert req(s, "POST", "/say", "text=" + quote(T4.C1_TEXT), headers=ck)[0] == 303
+        st, _, body = req(s, "GET", "/", headers=ck)
+        assert "记下这一条吗" in body and "原话：" in body  # 先出确认，不直接写入
+        assert not s.app.w.observations  # 没确认前世界里什么都没有
+        did = s.app.lock.store.drafts(status="pending")[0]["id"]
+        assert req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)[0] == 303
+        assert any(d["status"] == "confirmed" for d in s.app.lock.store.drafts())
+        assert req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)[0] == 409  # 已处理，不重复
+        assert req(s, "POST", "/confirm", "id=D999&choice=0", headers=ck)[0] == 409
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_reject_draft_leaves_world_unchanged(tmp_path):
+    from people_reading.tests import test_step4 as T4
+    s = _fresh(tmp_path, [T4.C1_OUT])
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote(T4.C1_TEXT), headers=ck)
+        n = len(s.app.w.persons)
+        for d in s.app.lock.store.drafts(status="pending"):  # 一条一条都选“不记”
+            assert req(s, "POST", "/confirm", f"id={d['id']}&choice=1", headers=ck)[0] == 303
+        assert s.app.lock.store.drafts(status="pending") == [] and len(s.app.w.persons) == n
+        assert not s.app.w.matters and not s.app.w.observations  # 全部拒绝：世界里什么都没有
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_model_failure_keeps_text_and_asks_for_manual(tmp_path):
+    s = _fresh(tmp_path, ["不是 JSON", "还是不是", "仍然不是"])
+    try:
+        ck = login(s)
+        assert req(s, "POST", "/say", "text=" + quote("随手记一句"), headers=ck)[0] == 303
+        st, _, body = req(s, "GET", "/", headers=ck)
+        assert st == 200 and "今天想记一件什么事" in body  # 没有编造的草稿
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_banner_only_when_external_model_is_on(tmp_path, monkeypatch):
+    s = _fresh(tmp_path, [])
+    try:
+        assert "外部模型已开启" not in req(s, "GET", "/", headers=login(s))[2]
+        monkeypatch.setenv("PR_ALLOW_EXTERNAL", "1"); monkeypatch.setenv("DEEPSEEK_API_KEY", "dummy-key-not-real")
+        from people_reading.llm import RemoteModel
+        s.app.model = RemoteModel()  # 只构造，不发请求
+        body = req(s, "GET", "/", headers=login(s))[2]
+        assert "外部模型已开启" in body and "dummy-key-not-real" not in body
+    finally:
+        s.shutdown(); s.server_close()

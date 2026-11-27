@@ -22,7 +22,7 @@
 - `people_reading/demo/demo.html`：演示页（C5-g 与 A.5.6）
 
 ```bash
-python -m pytest people_reading/tests   # 229 项测试；python -m people_reading.demo_step3 … demo_step6 生成演示页
+python -m pytest people_reading/tests   # 233 项测试；python -m people_reading.demo_step3 … demo_step6 生成演示页
 python -m people_reading.demo           # 重新生成演示页
 ```
 
@@ -63,3 +63,7 @@ model = make_model()                  # 按 PR_PROVIDER 返回 LocalModel 或 Re
 ## 手机用法（本地服务）
 `python -m people_reading.server --db my.db` 在本机 127.0.0.1:8765 起服务，口令在浏览器里输入。手机访问需在电脑上起服务并放在 Tailscale 等私有加密通道里：
 `--host <tailscale-ip> --allow-remote --allow-host <机器名>:8765`；不要暴露公网。手机浏览器里“添加到主屏幕”即成 app（无 service worker，不缓存任何人物信息）。
+
+**接 DeepSeek**（会把原话发到外部服务，先读 llm.py 里的说明）：在启动服务的电脑上设环境变量，不要把 key 写进文件或发到对话里：
+`PR_PROVIDER=deepseek PR_ALLOW_EXTERNAL=1 DEEPSEEK_API_KEY=… python -m people_reading.server --db my.db`；开启后页面顶部常驻“外部模型已开启”。
+已接通：说一句 → 草稿 → 逐条确认/不记；会前页的“记为行动”。未接通：锁定预测（需要类别与概率的输入界面）、会后结算。

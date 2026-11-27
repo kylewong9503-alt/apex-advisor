@@ -37,7 +37,7 @@ ENC = {  # 加密列
 class Store:
     def __init__(self, path: str, passphrase: str) -> None:
         self.path = path
-        self.db = sqlite3.connect(path)
+        self.db = sqlite3.connect(path, check_same_thread=False)  # 服务按请求起线程；所有访问由服务端的互斥锁串行化
         self.db.row_factory = sqlite3.Row
         # 先验口令，再做任何写操作（建表、补列）：口令错误时数据库一个字节都不能变
         row = None

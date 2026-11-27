@@ -25,13 +25,13 @@ KEYS = "ABCDEF"
 
 
 # ───────────────────────── 步骤构造 ─────────────────────────
-def ask(q: str, options: list, *, cue: str = "", selected: Optional[int] = 0) -> dict:
+def ask(q: str, options: list, *, cue: str = "", selected: Optional[int] = 0, act: Optional[dict] = None) -> dict:
     """options: [(文字, 记号, 说明)]；记号 ∈ you / model / rec / ''。"""
-    return {"kind": "ask", "q": q, "cue": cue, "options": [dict(text=t, mark=m, sub=s) for t, m, s in options], "selected": selected}
+    return {"kind": "ask", "q": q, "cue": cue, "options": [dict(text=t, mark=m, sub=s) for t, m, s in options], "selected": selected, "act": act}
 
 
-def open_ask(q: str, *, cue: str = "") -> dict:
-    return {"kind": "open", "q": q, "cue": cue}
+def open_ask(q: str, *, cue: str = "", act: Optional[dict] = None) -> dict:
+    return {"kind": "open", "q": q, "cue": cue, "act": act}
 
 
 def build_prep_steps(v: dict) -> list:
@@ -163,6 +163,7 @@ textarea{width:100%;font:inherit;font-size:20px;line-height:1.7;padding:16px;bor
 .btn.q{border-color:transparent;background:none;color:var(--ai);text-decoration:underline;text-underline-offset:4px;padding:0 8px}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 :focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.bn{position:fixed;top:0;left:0;right:0;z-index:5;background:var(--kin-soft);color:var(--kin);font-size:12px;line-height:20px;text-align:center;padding:2px 8px}
 .line{font:600 clamp(24px,3vw,44px)/1.45 var(--font-sans);margin:0 0 28px}
 .why{margin:0;font-size:17px;line-height:1.9;color:var(--ink-muted);max-width:560px}
 .big{font:600 clamp(56px,7vw,88px)/1 var(--font-sans);color:var(--ai);font-variant-numeric:tabular-nums}
@@ -179,6 +180,11 @@ function next(){location.hash='#/'+Math.min(n,cur()+1)}
 addEventListener('hashchange',function(){go(cur())});go(cur());
 document.addEventListener('click',function(e){var o=e.target.closest('.opt');
  if(o){[].forEach.call(o.parentNode.children,function(x){x.setAttribute('aria-checked',x===o?'true':'false')});var b=o.closest('.step').querySelector('[data-next]');b&&(b.disabled=false);return}
+ var a=e.target.closest('[data-act]');
+ if(a){e.preventDefault();var d=JSON.parse(a.dataset.fields||'{}'),st=a.closest('.step'),ch=st.querySelector('.opt[aria-checked=true]'),ta=st.querySelector('textarea');
+  if(ch)d.choice=[].indexOf.call(ch.parentNode.children,ch);if(ta)d.text=ta.value;if(a.hasAttribute('data-once')&&a.disabled)return;a.disabled=true;
+  fetch(a.dataset.act,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(d)}).then(function(r){
+   if(!r.ok)throw 0;if(a.hasAttribute('data-once')){a.textContent='已记下'}else{location.href='/'}}).catch(function(){a.disabled=false;a.textContent='没成功，再试一次'});return}
  if(e.target.closest('[data-next]')){e.preventDefault();next()}});
 document.addEventListener('keydown',function(e){var s=S[cur()-1];if(!s||e.target.tagName==='TEXTAREA')return;
  var k='ABCDEF'.indexOf(e.key.toUpperCase());var os=s.querySelectorAll('.opt');if(e.key.length===1&&k>=0&&os[k]){os[k].click();return}
@@ -188,7 +194,7 @@ document.addEventListener('keydown',function(e){var s=S[cur()-1];if(!s||e.target
 VARIANTS = [("classic", "l"), ("banded", "r"), ("dotted", "t"), ("ripple", "l"), ("tide", "r"), ("fade", "t")]
 
 
-def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识人", library_href: str = "", head_extra: str = "") -> str:
+def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识人", library_href: str = "", head_extra: str = "", banner: str = "") -> str:
     T = rd.t if rd is not None else (lambda x: x)
     e = lambda x: E(T(str(x)))  # noqa: E731  动态内容：遮挡时不输出原文
     masked = bool(rd is not None and rd.masked)
@@ -207,6 +213,11 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识
                       ground="var(--kon)" if dark else "var(--surface)")
         hd = f"<div class='hd'><span class='brand'>识人</span>{steps_dots(i + 1, total)}</div>"
         cue = f"<div class='cue'>{e(s['cue'])}</div>" if s.get("cue") else ""
+        def actattr(a):  # 这一步的“继续”要先把选择提交给服务：{"url": "/confirm", "fields": {...}}
+            if not a:
+                return ""
+            import json
+            return f" data-act='{E(a['url'])}' data-fields='{E(json.dumps(a.get('fields', {}), ensure_ascii=False), quote=True)}'"
         nxt_idx = i + 2
         skip = "<a class='btn q' href='#/%d' data-skip>跳过</a>" % nxt_idx
         if s["kind"] == "ask":
@@ -216,13 +227,16 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识
                 + (f"<i class='{MARKS[o['mark']]}' aria-hidden='true'></i>" if o["mark"] else "") + f"{e(o['text'])}"
                 + (f"<small>{e(o['sub'])}</small>" if o["sub"] else "") + "</span></button>" for k, o in enumerate(s["options"]))
             core = f"{cue}<h1>{e(s['q'])}</h1><div class='opts' role='radiogroup' aria-label='选项'>{os_}</div>"
-            ft = f"<div class='ft'>{skip}<button type='button' class='btn p' data-next{'' if s['selected'] is not None else ' disabled'}>继续　↵</button></div>"
+            ft = f"<div class='ft'>{skip}<button type='button' class='btn p' data-next{actattr(s.get('act'))}{'' if s['selected'] is not None else ' disabled'}>继续　↵</button></div>"
         elif s["kind"] == "open":
             core = f"{cue}<h1>{e(s['q'])}</h1><textarea rows='5' aria-label='你的回答' placeholder='按你记得的说就行，原话越接近越好'></textarea>"
-            ft = "<div class='ft'><span></span><button type='button' class='btn p' data-next>提交</button></div>"
+            ft = "<div class='ft'><span></span><button type='button' class='btn p' data-next{actattr(s.get('act'))}>提交</button></div>"
         elif s["kind"] == "answer":
             core = (f"{cue}<p class='line'>“{e(s['line'])}”</p><p class='why'>{e(s['reason'])}</p>")
-            btns = "".join(f"<button type='button' class='btn {'p' if k == 0 else 'o'}'>{E(b)}</button>" for k, b in enumerate(s["buttons"]))
+            def one(k, b):
+                label, a = (b, None) if isinstance(b, str) else (b["label"], b.get("act"))
+                return f"<button type='button' class='btn {'p' if k == 0 else 'o'}'{actattr(a) + ' data-once' if a else ''}>{E(label)}</button>"
+            btns = "".join(one(k, b) for k, b in enumerate(s["buttons"]))
             ft = f"<div class='ft'><div>{btns}</div><button type='button' class='btn q' data-next>会后</button></div>" if not last else f"<div class='ft'><div>{btns}</div></div>"
         else:  # result
             big = (f"<div class='bign'><span class='big'>{e(s['big'])}</span><span>{e(s['big_note'])}</span></div>" if s.get("big") else "")
@@ -234,4 +248,4 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识
     defs = f"<svg width='0' height='0' style='position:absolute' aria-hidden='true'><defs>{_scale_defs()}</defs></svg>"
     ttl = "识人" if masked else title
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>{E(ttl)}</title>{NO_CAPTURE_META}{head_extra}<style>{FLOW_CSS}{PRINT_GUARD_CSS}</style></head><body>{defs}{''.join(secs)}<script>{FLOW_JS}</script></body></html>")
+            f"<title>{E(ttl)}</title>{NO_CAPTURE_META}{head_extra}<style>{FLOW_CSS}{PRINT_GUARD_CSS}</style></head><body>{defs}{(f"<div class='bn' role='status'>{E(banner)}</div>" if banner else '')}{''.join(secs)}<script>{FLOW_JS}</script></body></html>")
