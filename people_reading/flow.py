@@ -253,7 +253,7 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
             ft = f"<div class='ft'><span class='mut'>取消勾选的不记</span><button type='button' class='btn p' data-next{actattr(s.get('act'))}>记下所选</button></div>"
         elif s["kind"] == "open":
             core = f"{cue}<h1>{e(s['q'])}</h1><textarea rows='5' aria-label='你的回答' placeholder='按你记得的说就行，原话越接近越好'></textarea>"
-            ft = "<div class='ft'><span></span><button type='button' class='btn p' data-next{actattr(s.get('act'))}>提交</button></div>"
+            ft = f"<div class='ft'><span></span><button type='button' class='btn p' data-next{actattr(s.get('act'))}>提交</button></div>"
         elif s["kind"] == "answer":
             core = (f"{cue}<p class='line'>“{e(s['line'])}”</p><p class='why'>{e(s['reason'])}</p>")
             def one(k, b):

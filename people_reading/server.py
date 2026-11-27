@@ -34,7 +34,7 @@ ICON = mark_svg()
 from .workbench import workbench_view
 
 E = html.escape
-CSP = ("default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; script-src 'unsafe-inline'; img-src 'self' data:; "
+CSP = ("default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; connect-src 'self'; script-src 'unsafe-inline'; img-src 'self' data:; "
        "manifest-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 MANIFEST = ('{"name":"Kagami","short_name":"Kagami","start_url":"/","display":"standalone","background_color":"#f4f1e9",'
             '"theme_color":"#1f3b61","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}')
@@ -534,7 +534,7 @@ def make_handler(app: App):
                 self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Security-Policy", CSP)
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Referrer-Policy", "same-origin")  # 不向外站泄露地址；同源请求照常带 Origin
             for k, v in headers:
                 self.send_header(k, v)
             self.end_headers()
@@ -555,8 +555,12 @@ def make_handler(app: App):
             return is_loopback(name) or h in app.allowed_hosts or name in app.allowed_hosts
 
         def _same_origin(self) -> bool:
-            """写请求必须来自本站：Origin 与 Host 一致；经反向代理（Codespaces、Caddy、Tailscale）时 Host 可能被改写成
-            localhost，此时只要 Origin 的主机在白名单里也放行。浏览器自己填 Origin，页面脚本改不了，所以这仍然挡得住跨站请求。"""
+            """写请求必须来自本站。优先看浏览器自己填的 Sec-Fetch-Site（页面脚本改不了）：same-origin 才放行。
+            没有这个头的旧浏览器，退回比较 Origin 与 Host；经反向代理时 Host 可能被改写成 localhost，Origin 在白名单里也放行。
+            Origin 为 null（浏览器在某些隐私设置下会这样）且没有 Sec-Fetch-Site 时拒绝。"""
+            sfs = self.headers.get("Sec-Fetch-Site")
+            if sfs:
+                return sfs == "same-origin"
             o = self.headers.get("Origin")
             if o is None:
                 return True

@@ -434,3 +434,65 @@ def test_origin_check_behind_a_rewriting_proxy(tmp_path):
         assert req(s, "POST", "/mask", headers={**ck, "Origin": "https://kagami.example.net.evil.example"})[0] == 403
     finally:
         s.shutdown(); s.server_close()
+
+
+# ───────── 真实浏览器：从页面上点按钮走一遍（之前所有服务端测试都是直接发请求，漏掉了页面本身的两个问题）─────────
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+
+BROWSER_JS = r"""
+const {chromium}=require('playwright');(async()=>{const [port,pw]=process.argv.slice(2);
+const b=await chromium.launch();const p=await b.newPage({viewport:{width:1280,height:800}});
+const out={posts:[],errors:[]};p.on('pageerror',e=>out.errors.push(e.message));p.on('console',m=>{if(m.type()==='error')out.errors.push(m.text())});
+p.on('response',r=>{if(r.request().method()==='POST')out.posts.push(new URL(r.url()).pathname+' '+r.status())});
+await p.goto('http://127.0.0.1:'+port+'/unlock');await p.fill('input[name=passphrase]',pw);await p.click('button[type=submit]');await p.waitForURL('**/');
+await p.fill('textarea','明天要和 F 谈，想争取集团专家支持，希望他引荐一次。');
+await p.click('.step.on button.btn.p');
+await p.waitForFunction(()=>/都记下吗/.test(document.querySelector('.step.on h1').textContent),null,{timeout:8000});
+out.h1=await p.evaluate(()=>document.querySelector('.step.on h1').textContent);
+out.checked=await p.evaluate(()=>document.querySelectorAll('.step.on .opt[aria-checked=true]').length);
+await p.click('.step.on .opt >> nth=2');   // 取消勾选第 3 条
+await p.click('.step.on button.btn.p');
+await p.waitForFunction(()=>!/都记下吗/.test(document.querySelector('.step.on h1').textContent),null,{timeout:8000});
+out.after=await p.evaluate(()=>document.querySelector('.step.on h1').textContent);
+console.log(JSON.stringify(out));await b.close()})();
+"""
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="需要 node + playwright 做真实页面检查")
+def test_real_browser_submit_then_confirm_with_one_unchecked(tmp_path):
+    from people_reading.llm import ScriptedModel
+    from people_reading.tests import test_step4 as T4
+    path = str(tmp_path / "b.db"); Store(path, PW).close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel([T4.C1_OUT]))
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    js = tmp_path / "b.js"; js.write_text(BROWSER_JS)
+    try:
+        r = subprocess.run(["node", str(js), str(s.server_address[1]), PW], capture_output=True, text=True, timeout=90)
+        if "Cannot find module" in r.stderr:
+            pytest.skip("没有 playwright")
+        assert r.returncode == 0, r.stderr[-800:]
+        import json as _j
+        out = _j.loads(r.stdout.strip().splitlines()[-1])
+        assert out["errors"] == [], out["errors"]  # 没有脚本错误，也没有被 CSP 拦掉的请求
+        assert "/say 303" in out["posts"] and "/confirm_many 303" in out["posts"], out["posts"]
+        assert "都记下吗" in out["h1"] and out["checked"] == 3 and "都记下吗" not in out["after"]
+        # 第 3 条被取消勾选 = 不记
+        st = {d["id"]: d["status"] for d in s.app.lock.store.drafts()}
+        assert sorted(st.values()).count("rejected") == 1 and sorted(st.values()).count("confirmed") == 2
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_every_button_with_an_action_renders_its_attributes():
+    """页面上每个带动作的按钮都必须真的带 data-act（之前有个提交按钮的属性没被渲染，点了没反应）。"""
+    from people_reading.flow import ask, check, open_ask, render_flow
+    steps = [open_ask("q", act={"url": "/say", "fields": {}}), ask("q", [("a", "", "")], act={"url": "/x", "fields": {}}),
+             check("q", [("D1", "t", "")], act={"url": "/y", "fields": {}}),
+             {"kind": "answer", "cue": "", "line": "l", "reason": "r", "buttons": [{"label": "b", "act": {"url": "/z", "fields": {}}}]},
+             {"kind": "summary", "cue": "", "title": "t", "rows": [], "note": "n", "act": {"url": "/c", "fields": {}}, "back": {"url": "/r", "fields": {}}},
+             {"kind": "result", "cue": "", "title": "t", "big": "", "big_note": "", "note": "", "act": {"url": "/d", "fields": {}}}]
+    page = render_flow(steps)
+    for u in ("/say", "/x", "/y", "/z", "/c", "/r", "/d"):
+        assert f"data-act='{u}'" in page, u
+    assert "{actattr" not in page  # 没有未展开的模板片段
