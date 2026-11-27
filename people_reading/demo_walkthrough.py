@@ -103,12 +103,18 @@ def run(outdir: pathlib.Path) -> pathlib.Path:
         body = w.page("② 确认草稿")
         if not w.confirm_here(body):
             break
+    if w.srv.app.reading:  # 记下之后的回执
+        w.page("②′ 已归档回执")
+        w.post("/reading/done")
     w.page("② 还没有判断：先问你")
     w.post("/say", text=T4.C2_TEXT)
     for _ in range(10):
         body = w.page("② 确认你的判断")
         if not w.confirm_here(body):
             break
+    if w.srv.app.reading:
+        w.page("②′ 已归档回执")
+        w.post("/reading/done")
     body = w.page("③ 会前：判断与分叉")
     w.post("/lock/start")
     w.post("/lock/next", k="cats", choice=0)
