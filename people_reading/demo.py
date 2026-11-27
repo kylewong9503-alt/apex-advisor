@@ -151,6 +151,8 @@ th,td{border:1px solid var(--line);padding:5px 8px;text-align:left;vertical-alig
 
 
 def main() -> None:
+    from .theme import copy_font
+    copy_font(pathlib.Path(__file__).parent / "demo")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(render(), encoding="utf-8")
     a, b = example_one(), example_two()

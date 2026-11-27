@@ -375,3 +375,15 @@ def test_multiple_behaviors_on_one_meeting_ask_which_to_settle_first(tmp_path):
         s.app.sess._behavior_for()  # 指明了行为与版本：不再报“需要 behavior_key”
     finally:
         s.shutdown(); s.server_close()
+
+
+def test_inter_font_served_locally_without_login_and_csp_allows_only_self(srv):
+    st, h, body = req(srv, "GET", "/inter.woff2")
+    assert st == 200 and h["Content-Type"] == "font/woff2" and "max-age" in h["Cache-Control"]
+    raw = open(__import__("people_reading.theme", fromlist=["x"]).FONT_FILE, "rb").read()
+    assert raw[:4] == b"wOF2" and len(raw) < 300_000  # 真是 woff2，且不大
+    ck = login(srv)
+    st, h, page = req(srv, "GET", "/", headers=ck)
+    assert "font-src 'self'" in h["Content-Security-Policy"] and "inter.woff2" in page
+    assert "fonts.googleapis" not in page and "https://" not in page
+    assert "Inter" in page and "Noto Sans SC" in page

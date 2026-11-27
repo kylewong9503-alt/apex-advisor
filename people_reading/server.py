@@ -34,7 +34,7 @@ ICON = mark_svg()
 from .workbench import workbench_view
 
 E = html.escape
-CSP = ("default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; "
+CSP = ("default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; script-src 'unsafe-inline'; img-src 'self' data:; "
        "manifest-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 MANIFEST = ('{"name":"Kagami","short_name":"Kagami","start_url":"/","display":"standalone","background_color":"#f4f1e9",'
             '"theme_color":"#1f3b61","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}')
@@ -457,7 +457,8 @@ def make_handler(app: App):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(b)))
-            self.send_header("Cache-Control", "no-store")
+            if not any(k == "Cache-Control" for k, _ in headers):
+                self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Security-Policy", CSP)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
@@ -503,6 +504,16 @@ def make_handler(app: App):
                 return self._send(200, "ok", "text/plain")
             if path == "/manifest.webmanifest":
                 return self._send(200, MANIFEST, "application/manifest+json")
+            if path == "/inter.woff2":  # 字体文件不含任何人物信息：可缓存，解锁前也可取
+                from .theme import FONT_FILE
+                b = FONT_FILE.read_bytes()
+                self.send_response(200)
+                for k, val in (("Content-Type", "font/woff2"), ("Content-Length", str(len(b))), ("Cache-Control", "public, max-age=86400"),
+                               ("X-Content-Type-Options", "nosniff"), ("Content-Security-Policy", CSP)):
+                    self.send_header(k, val)
+                self.end_headers()
+                self.wfile.write(b)
+                return
             if path == "/icon.svg":
                 return self._send(200, ICON, "image/svg+xml")
             if path == "/unlock":

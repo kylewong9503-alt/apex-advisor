@@ -138,7 +138,7 @@ def steps_dots(n: int, total: int) -> str:
 # ───────────────────────── 渲染 ─────────────────────────
 FLOW_CSS = TOKENS_CSS + """
 *{box-sizing:border-box}html,body{height:100%}
-body{margin:0;background:var(--surface);color:var(--ink);font:15px/26px var(--font-sans)}
+body{margin:0;background:var(--surface);color:var(--ink);font:15px/26px var(--font-sans);font-feature-settings:'tnum' 1,'cv11' 1}
 .step{display:none;height:100vh;min-height:560px}.step.on{display:flex}
 .pane{flex:none;width:38%;max-width:560px;overflow:hidden;background:var(--surface)}.pane.dark{background:var(--kon)}
 .step.top{flex-direction:column}.step.top .pane{width:100%;max-width:none;height:230px}
