@@ -22,7 +22,7 @@
 - `people_reading/demo/demo.html`：演示页（C5-g 与 A.5.6）
 
 ```bash
-python -m pytest people_reading/tests   # 221 项测试；python -m people_reading.demo_step3 … demo_step6 生成演示页
+python -m pytest people_reading/tests   # 229 项测试；python -m people_reading.demo_step3 … demo_step6 生成演示页
 python -m people_reading.demo           # 重新生成演示页
 ```
 
@@ -59,3 +59,7 @@ model = make_model()                  # 按 PR_PROVIDER 返回 LocalModel 或 Re
 
 ## 界面：一问一答（flow.py）
 主界面是 `people_reading/flow.py`：每屏一个问题、几个选项、一个按钮，答完直接给结论。会前 = 判断 →（分叉问题）→ 会上那一句话；会后 = 开放题（不给候选答案）→ 前提核对 → 结果。人物页、关系图、校准面板仍在 `shell.render_app`，作为“资料”入口。演示：`python -m people_reading.demo_flow`。
+
+## 手机用法（本地服务）
+`python -m people_reading.server --db my.db` 在本机 127.0.0.1:8765 起服务，口令在浏览器里输入。手机访问需在电脑上起服务并放在 Tailscale 等私有加密通道里：
+`--host <tailscale-ip> --allow-remote --allow-host <机器名>:8765`；不要暴露公网。手机浏览器里“添加到主屏幕”即成 app（无 service worker，不缓存任何人物信息）。

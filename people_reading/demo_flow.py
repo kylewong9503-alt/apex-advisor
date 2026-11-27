@@ -18,6 +18,11 @@ DIR = pathlib.Path(__file__).parent / "demo"
 
 
 def build():
+    w, _st, a, b = build_store(full=True)
+    return w, a, b
+
+
+def build_store(full: bool = False):
     w, st, it, pm, mid, iid = T.c2(pathlib.Path(tempfile.mkdtemp()))
     it.model.outputs = [T.PREP_OUT, T.C3_OUT, {"branch": "A"}, T.REVISED, T.report_out(T.REPORT_DRAFTS), T.proposal(), T.REVIEW]
     prep = pm.prepare(); pm.confirm_categories(); pm.formalize(T.DIST_H)
@@ -34,7 +39,8 @@ def build():
     sess.confirm_outcome()
     rev = sess.review(confirm_intervention="partial")
     cards = [c for c in rev["cards"] if c["id"] == "H1"]
-    return w, prep_steps, build_settle_steps(screen, pqs, prop, cards)
+    out = (prep_steps, build_settle_steps(screen, pqs, prop, cards))
+    return (w, st, *out) if full else (w, st)
 
 
 def main() -> None:

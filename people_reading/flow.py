@@ -188,7 +188,7 @@ document.addEventListener('keydown',function(e){var s=S[cur()-1];if(!s||e.target
 VARIANTS = [("classic", "l"), ("banded", "r"), ("dotted", "t"), ("ripple", "l"), ("tide", "r"), ("fade", "t")]
 
 
-def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识人", library_href: str = "") -> str:
+def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识人", library_href: str = "", head_extra: str = "") -> str:
     T = rd.t if rd is not None else (lambda x: x)
     e = lambda x: E(T(str(x)))  # noqa: E731  动态内容：遮挡时不输出原文
     masked = bool(rd is not None and rd.masked)
@@ -234,4 +234,4 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识
     defs = f"<svg width='0' height='0' style='position:absolute' aria-hidden='true'><defs>{_scale_defs()}</defs></svg>"
     ttl = "识人" if masked else title
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>{E(ttl)}</title>{NO_CAPTURE_META}<style>{FLOW_CSS}{PRINT_GUARD_CSS}</style></head><body>{defs}{''.join(secs)}<script>{FLOW_JS}</script></body></html>")
+            f"<title>{E(ttl)}</title>{NO_CAPTURE_META}{head_extra}<style>{FLOW_CSS}{PRINT_GUARD_CSS}</style></head><body>{defs}{''.join(secs)}<script>{FLOW_JS}</script></body></html>")
