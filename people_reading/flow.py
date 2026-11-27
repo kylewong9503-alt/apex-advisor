@@ -127,8 +127,10 @@ def pattern(variant: str, w: int, h: int, *, uid: str, R: int = 26, ground: str 
             elif variant == "ripple":
                 d = ((cx - focus[0]) ** 2 + (cy - focus[1]) ** 2) ** .5 / max(w, h)
                 sym = "ripple_hi" if d < .16 else "classic" if d < .38 else "ripple_lo"
-            elif variant == "fade" and ((c * 7 + r * 13) % 10) / 10 > max(0, 1 - cy / h * 1.15):
-                continue
+            elif variant == "fade":
+                if ((c * 7 + r * 13) % 10) / 10 > max(0, 1 - cy / h * 1.15):
+                    continue
+                sym = "classic"  # 向下渐稀：笔法同古典
             use.append(f"<use href='#s-{sym}' x='{cx}' y='{round(cy, 2)}'/>")
     return (f"<svg viewBox='0 0 {w} {h}' preserveAspectRatio='xMidYMin slice' width='100%' height='100%' aria-hidden='true' focusable='false' "
             f"style='--g:{ground};display:block'><rect width='{w}' height='{h}' fill='{ground}'/>{''.join(use)}</svg>")
@@ -147,8 +149,8 @@ FLOW_CSS = TOKENS_CSS + """
 *{box-sizing:border-box}html,body{height:100%}
 body{margin:0;background:var(--surface);color:var(--ink);font:15px/26px var(--font-sans);font-feature-settings:'tnum' 1,'cv11' 1}
 .step{display:none;height:100vh;min-height:560px}.step.on{display:flex}
-.pane{flex:none;width:38%;max-width:560px;overflow:hidden;background:var(--surface)}.pane.dark{background:var(--kon)}
-.step.top{flex-direction:column}.step.top .pane{width:100%;max-width:none;height:230px}
+.pane{flex:none;width:calc(38% - 32px);max-width:528px;margin:16px;border-radius:24px;overflow:hidden;background:var(--surface)}.pane.dark{background:var(--kon)}
+.step.top{flex-direction:column}.step.top .pane{width:auto;max-width:none;height:214px}
 .step.right{flex-direction:row-reverse}
 .body{flex:1;min-width:0;padding:56px clamp(24px,6vw,96px);display:flex;flex-direction:column;justify-content:space-between;max-width:880px;margin:0 auto;width:100%}
 .hd{display:flex;justify-content:space-between;align-items:center}
@@ -181,20 +183,35 @@ textarea{width:100%;font:inherit;font-size:20px;line-height:1.7;padding:16px;bor
 .srs{border-bottom:1px solid var(--line);max-width:620px}.sr{display:flex;gap:20px;padding:12px 0;border-top:1px solid var(--line);font-size:16px;line-height:1.6}.sr span:first-child{width:56px;flex:none;color:var(--ink-muted)}
 .nt{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:6;max-width:min(560px,92vw);background:var(--ink);color:var(--surface);padding:12px 18px;border-radius:var(--radius-md);font-size:14px;line-height:22px}
 .qt{margin:0 0 20px;padding:0 0 0 16px;border-left:2px solid var(--line-strong);color:var(--ink-muted);font-size:15px;line-height:26px}.rd{list-style:none;margin:0;padding:0}.rd li{display:flex;gap:12px;align-items:flex-start;padding:14px 0;border-top:1px solid var(--line);font-size:18px;line-height:1.5}.rd li:last-child{border-bottom:1px solid var(--line)}.rd small{display:block;margin-top:2px;font-size:13px;color:var(--ink-muted)}.rd .mk-model{margin-top:9px}\n.who,.where{margin:0 0 12px}.who .cue,.where .cue{margin-bottom:6px}.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{min-height:30px;padding:0 11px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--ink);font:500 13px var(--font-sans);cursor:pointer}.chip.scn{min-height:26px;padding:0 9px;font-size:12px;border-color:var(--line)}.chip.scn[aria-pressed=true]{background:var(--mizu);border-color:var(--hanada);color:var(--ai)}.newscn{border-style:dashed}.newscene{margin-top:6px;width:100%;font:inherit;font-size:14px;padding:6px 10px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--ink)}.chip[aria-pressed=true]{background:var(--ai);border-color:var(--ai);color:var(--on-ai)}.chip.new{border-style:dashed}.newname{margin-top:6px;width:100%;font:inherit;font-size:14px;padding:6px 10px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--ink)}
+.step.compose{position:relative;flex-direction:column;background:var(--surface);overflow:hidden}.step.compose.on{display:flex}
+.hero{position:absolute;left:0;right:0;top:0;height:240px;overflow:hidden;opacity:.34;-webkit-mask-image:linear-gradient(#000 10%,transparent);mask-image:linear-gradient(#000 10%,transparent);pointer-events:none}
+.glow{position:absolute;left:0;right:0;bottom:0;height:55%;pointer-events:none;background:radial-gradient(ellipse 85% 70% at 50% 118%,color-mix(in srgb,var(--hanada) 30%,transparent),transparent 70%)}
+.cbody{position:relative;z-index:1;flex:1;min-height:0;display:flex;flex-direction:column;width:100%;max-width:860px;margin:0 auto;padding:28px clamp(16px,5vw,48px) 24px}
+.stage{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:12px;padding:16px 0}.stage h1{margin:0;font-size:clamp(26px,4.2vw,42px);line-height:1.3}.stage .cue{margin:0}.bigmark svg{display:block;width:60px;height:60px;border-radius:18px;box-shadow:0 0 0 1px var(--line)}
+.dock{display:flex;flex-direction:column;gap:10px}.skip{align-self:flex-end;height:28px}
+.rows{display:flex;flex-direction:column;gap:6px}.row{display:flex;align-items:center;gap:6px;overflow-x:auto;scrollbar-width:none;padding:1px 0}.row::-webkit-scrollbar{display:none}.row .chip{flex:none}.row .lab{flex:none;font:500 11px/1 var(--font-sans);letter-spacing:.14em;color:var(--ink-muted);min-width:28px}
+.row .newname,.row .newscene{flex:none;width:150px;margin:0}
+.composer{display:flex;align-items:flex-end;gap:8px;background:var(--surface-raised);border:1px solid var(--line);border-radius:28px;padding:8px 8px 8px 22px;box-shadow:0 12px 40px color-mix(in srgb,var(--ai) 12%,transparent);transition:box-shadow .15s,border-color .15s}
+.composer:focus-within{border-color:var(--hanada);box-shadow:0 12px 44px color-mix(in srgb,var(--hanada) 28%,transparent)}
+.composer textarea{flex:1;min-width:0;border:0;outline:0;background:none;resize:none;font:inherit;font-size:17px;line-height:26px;padding:9px 0;max-height:168px;color:var(--ink);border-radius:0}
+.send{flex:none;width:44px;height:44px;padding:0;border-radius:50%;justify-content:center}.send:disabled{background:var(--mizu);border-color:var(--mizu);color:var(--ink-muted);opacity:1}
 .line{font:600 clamp(24px,3vw,44px)/1.45 var(--font-sans);margin:0 0 28px}
 .why{margin:0;font-size:17px;line-height:1.9;color:var(--ink-muted);max-width:560px}
 .big{font:600 clamp(56px,7vw,88px)/1 var(--font-sans);color:var(--ai);font-variant-numeric:tabular-nums}
 .bign{display:flex;align-items:baseline;gap:16px;margin-bottom:12px;flex-wrap:wrap}.bign span+span{font-size:16px;color:var(--ink-muted);line-height:1.7;max-width:480px}
-@media(max-width:720px){.step.on{flex-direction:column}.step.right{flex-direction:column}.pane,.step.top .pane{width:100%;max-width:none;height:150px}.body{padding:24px 22px}h1{margin-bottom:24px}.opt{font-size:17px}.opt[aria-checked=true]{margin:0 -12px;padding:18px 12px;width:calc(100% + 24px)}}
+@media(max-width:720px){.step.on{flex-direction:column}.step.right{flex-direction:column}.pane,.step.top .pane{width:auto;max-width:none;height:130px;margin:12px 12px 0;border-radius:20px}.body{padding:24px 22px}h1{margin-bottom:24px}.opt{font-size:17px}.opt[aria-checked=true]{margin:0 -12px;padding:18px 12px;width:calc(100% + 24px)}}
 @media(prefers-reduced-motion:no-preference){.step.on .body{animation:in .2s ease-out}@keyframes in{from{opacity:.6;transform:translateY(4px)}to{opacity:1;transform:none}}}
 """
 
 FLOW_JS = """(function(){
+var ARROW='<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',SPIN='<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-dasharray="30 60"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.9s" repeatCount="indefinite"/></circle></svg>';
 var S=[].slice.call(document.querySelectorAll('.step')),n=S.length;
-function go(i){i=Math.max(1,Math.min(n,i));S.forEach(function(s,k){s.classList.toggle('on',k===i-1)});var f=S[i-1].querySelector('.opt[aria-checked=true],textarea,.btn.p');f&&f.focus({preventScroll:true})}
+function go(i){i=Math.max(1,Math.min(n,i));S.forEach(function(s,k){s.classList.toggle('on',k===i-1)});var f=S[i-1].querySelector('.opt[aria-checked=true],textarea,.btn.p:not(:disabled)');f&&f.focus({preventScroll:true})}
 function cur(){var m=(location.hash||'#/1').match(/(\\d+)/);return m?+m[1]:1}
 function next(){location.hash='#/'+Math.min(n,cur()+1)}
 addEventListener('hashchange',function(){go(cur())});go(cur());
+document.addEventListener('input',function(e){var t=e.target;if(t.tagName!=='TEXTAREA')return;t.style.height='auto';t.style.height=Math.min(t.scrollHeight,168)+'px';var b=t.closest('.composer').querySelector('.send');if(b&&!b.hasAttribute('data-busy'))b.disabled=!t.value.trim()});
+document.addEventListener('keydown',function(e){if(e.target.tagName==='TEXTAREA'&&(e.metaKey||e.ctrlKey)&&e.key==='Enter'){var b=e.target.closest('.composer').querySelector('.send');if(b&&!b.disabled)b.click()}});
 document.addEventListener('click',function(e){var sc0=e.target.closest('.chip.scn');if(sc0){var on0=sc0.getAttribute('aria-pressed')==='true';sc0.setAttribute('aria-pressed',on0?'false':'true');if(sc0.hasAttribute('data-newscn')){var ni=sc0.closest('.where').querySelector('.newscene');ni.hidden=on0;if(!on0)ni.focus()}return}
  var ch0=e.target.closest('.chip');if(ch0){var box=ch0.closest('.who'),on=ch0.getAttribute('aria-pressed')==='true';[].forEach.call(box.querySelectorAll('.chip'),function(x){x.setAttribute('aria-pressed','false')});ch0.setAttribute('aria-pressed',on?'false':'true');var inp=box.querySelector('.newname');var isNew=ch0.hasAttribute('data-new')&&!on;inp.hidden=!isNew;if(isNew)inp.focus();return}
  var o=e.target.closest('.opt');
@@ -202,9 +219,9 @@ document.addEventListener('click',function(e){var sc0=e.target.closest('.chip.sc
  if(o){[].forEach.call(o.parentNode.children,function(x){x.setAttribute('aria-checked',x===o?'true':'false')});var b=o.closest('.step').querySelector('[data-next]');b&&(b.disabled=false);return}
  var a=e.target.closest('[data-act]');
  if(a){e.preventDefault();var d=JSON.parse(a.dataset.fields||'{}'),st=a.closest('.step'),ch=st.querySelector('.opt[aria-checked=true]'),ta=st.querySelector('textarea');
-  if(ch)d.choice=[].indexOf.call(ch.parentNode.children,ch);var sp=[].filter.call(st.querySelectorAll('.chip.scn[aria-pressed=true]:not([data-newscn])'),function(x){return x.dataset.stok}).map(function(x){return x.dataset.stok});if(sp.length)d.scenes=sp.join(',');var ns=st.querySelector('.newscene');if(ns&&!ns.hidden&&ns.value.trim())d.newscene=ns.value.trim();var pc=st.querySelector('.chip[aria-pressed=true]:not([data-new]):not(.scn)');if(pc)d.who=pc.dataset.tok;var nn=st.querySelector('.newname');if(nn&&!nn.hidden&&nn.value.trim())d.newname=nn.value.trim();var cks=st.querySelectorAll('.opt[role=checkbox]');if(cks.length)d.ids=[].filter.call(cks,function(x){return x.getAttribute('aria-checked')==='true'}).map(function(x){return x.dataset.id}).join(',');if(ta)d.text=ta.value;if(a.hasAttribute('data-once')&&a.disabled)return;a.disabled=true;a.dataset.t=a.textContent;a.textContent='处理中…';a.setAttribute('aria-busy','true');
+  if(ch)d.choice=[].indexOf.call(ch.parentNode.children,ch);var sp=[].filter.call(st.querySelectorAll('.chip.scn[aria-pressed=true]:not([data-newscn])'),function(x){return x.dataset.stok}).map(function(x){return x.dataset.stok});if(sp.length)d.scenes=sp.join(',');var ns=st.querySelector('.newscene');if(ns&&!ns.hidden&&ns.value.trim())d.newscene=ns.value.trim();var pc=st.querySelector('.chip[aria-pressed=true]:not([data-new]):not(.scn)');if(pc)d.who=pc.dataset.tok;var nn=st.querySelector('.newname');if(nn&&!nn.hidden&&nn.value.trim())d.newname=nn.value.trim();var cks=st.querySelectorAll('.opt[role=checkbox]');if(cks.length)d.ids=[].filter.call(cks,function(x){return x.getAttribute('aria-checked')==='true'}).map(function(x){return x.dataset.id}).join(',');if(ta)d.text=ta.value;if(a.hasAttribute('data-once')&&a.disabled)return;a.disabled=true;a.setAttribute('data-busy','1');a.setAttribute('aria-busy','true');if(!a.classList.contains('send')){a.dataset.t=a.textContent;a.textContent='处理中…'}else{a.innerHTML=SPIN}
   fetch(a.dataset.act,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(d)}).then(function(r){
-   if(!r.ok)throw 0;if(a.hasAttribute('data-once')){a.textContent='已记下'}else{location.href='/'}}).catch(function(){a.disabled=false;a.removeAttribute('aria-busy');a.textContent='没成功，再试一次'});return}
+   if(!r.ok)throw 0;if(a.hasAttribute('data-once')){a.textContent='已记下'}else{location.href='/'}}).catch(function(){a.disabled=false;a.removeAttribute('aria-busy');a.removeAttribute('data-busy');if(a.classList.contains('send')){a.innerHTML=ARROW;a.title='没成功，再试一次'}else{a.textContent='没成功，再试一次'}});return}
  if(e.target.closest('[data-next]')){e.preventDefault();next()}});
 document.addEventListener('keydown',function(e){var s=S[cur()-1];if(!s||e.target.tagName==='TEXTAREA')return;
  var k='ABCDEF'.indexOf(e.key.toUpperCase());var os=s.querySelectorAll('.opt');if(e.key.length===1&&k>=0&&os[k]){os[k].click();return}
@@ -263,20 +280,28 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
                     f"<ul class='rd'>{lis}</ul><p class='why' style='margin-top:16px;font-size:14px'>{E(s['note'])}</p>")
             ft = f"<div class='ft'><span></span><button type='button' class='btn p'{actattr(s.get('act'))}>继续</button></div>"
         elif s["kind"] == "open":
-            chips = ""
+            # 对话式输入：居中的问候 + 底部悬浮的输入框（Gemini 式）；标签是输入框上方一行可横滑的小标签
+            rows = ""
             if s.get("people") is not None:
                 cs = "".join(f"<button type='button' class='chip' aria-pressed='false' data-tok='{E(tok)}'>{e(label)}</button>" for tok, label in s["people"])
-                chips = (f"<div class='who' role='group' aria-label='这件事说的是谁'><div class='cue'>这是在说谁？（可以不选）</div>"
-                         f"<div class='chips'>{cs}<button type='button' class='chip new' aria-pressed='false' data-new>＋ 新的人</button></div>"
+                rows += (f"<div class='who row' role='group' aria-label='这件事说的是谁'><span class='lab'>谁</span>"
+                         f"{cs}<button type='button' class='chip new' aria-pressed='false' data-new>＋ 新的人</button>"
                          f"<input type='text' class='newname' aria-label='新的人的名字或代号' placeholder='名字或代号' hidden></div>")
             if s.get("scenes") is not None:
                 sc = "".join(f"<button type='button' class='chip scn' aria-pressed='false' data-stok='{E(tok)}'>{e(label)}</button>" for tok, label in s["scenes"])
-                chips += (f"<div class='where' role='group' aria-label='这是在什么场合'><div class='cue'>什么场合？（可多选，可不选）</div>"
-                          f"<div class='chips'>{sc}<button type='button' class='chip scn newscn' aria-pressed='false' data-newscn>＋</button></div>"
-                          f"<input type='text' class='newscene' aria-label='自定义场景名' placeholder='场景名（≤12 字）' maxlength='12' hidden></div>")
-            core = f"{cue}<h1>{e(s['q'])}</h1>{chips}<textarea rows='5' aria-label='你的回答' placeholder='按你记得的说就行，原话越接近越好'></textarea>"
-            sk = f"<button type='button' class='btn q'{actattr(s['skip'])}>跳过</button>" if s.get("skip") else "<span></span>"
-            ft = f"<div class='ft'>{sk}<button type='button' class='btn p' data-next{actattr(s.get('act'))}>提交</button></div>"
+                rows += (f"<div class='where row' role='group' aria-label='这是在什么场合'><span class='lab'>场合</span>"
+                         f"{sc}<button type='button' class='chip scn newscn' aria-pressed='false' data-newscn>＋</button>"
+                         f"<input type='text' class='newscene' aria-label='自定义场景名' placeholder='场景名（≤12 字）' maxlength='12' hidden></div>")
+            sk = f"<button type='button' class='btn q skip'{actattr(s['skip'])}>跳过</button>" if s.get("skip") else ""
+            send = (f"<button type='button' class='btn p send' aria-label='发送' data-next{actattr(s.get('act'))} disabled>"
+                    "<svg viewBox='0 0 24 24' width='20' height='20' fill='none' stroke='currentColor' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'><path d='M12 19V5M5 12l7-7 7 7'/></svg></button>")
+            hero = pattern("fade", 1440, 240, uid=str(i), ground="var(--surface)")
+            secs.append(
+                f"<section class='step compose' aria-label='第 {i + 1} 步'><div class='hero' aria-hidden='true'>{hero}</div><div class='glow' aria-hidden='true'></div>"
+                f"<div class='cbody'>{hd}<div class='stage'><span class='bigmark'>{mark_svg(60)}</span>{cue}<h1>{e(s['q'])}</h1></div>"
+                f"<div class='dock'>{sk}<div class='rows'>{rows}</div><div class='composer'>"
+                f"<textarea rows='1' aria-label='你的回答' placeholder='按你记得的说就行，原话越接近越好'></textarea>{send}</div></div></div></section>")
+            continue
         elif s["kind"] == "answer":
             core = (f"{cue}<p class='line'>“{e(s['line'])}”</p><p class='why'>{e(s['reason'])}</p>")
             def one(k, b):

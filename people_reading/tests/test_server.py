@@ -815,3 +815,11 @@ def test_real_browser_scene_tags_are_small_and_submitted(tmp_path):
         assert "团建" in dr["proposed"]["scenes"] and len(dr["proposed"]["scenes"]) == 3
     finally:
         s.shutdown(); s.server_close()
+
+
+def test_open_step_is_a_composer_with_disabled_send_until_text():
+    from people_reading.flow import open_ask, render_flow
+    page = render_flow([open_ask("q", act={"url": "/say", "fields": {}}, people=[("t1", "F")], scenes=[("s1", "开会")])])
+    assert "class='composer'" in page and "class='btn p send'" in page and " disabled>" in page
+    assert page.index("class='rows'") < page.index("class='composer'")  # 标签在输入框上方
+    assert "data-tok='t1'" in page and "data-stok='s1'" in page and "{actattr" not in page
