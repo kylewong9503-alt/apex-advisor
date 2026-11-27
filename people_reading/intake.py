@@ -108,7 +108,7 @@ class Intake:
 
     # —— 录入 ——
     def handle(self, cid: str, text: str, *, hours_since_event: float = 0, prompt_kind: Optional[str] = None,
-               interaction_id: Optional[str] = None, about: Optional[str] = None) -> Reply:
+               interaction_id: Optional[str] = None, about: Optional[str] = None, scenes: tuple = ()) -> Reply:
         """prompt_kind：None | "settlement_reminder" | "judgment_support_question"（见 2.5）。
         interaction_id：把这条消息产生的草稿挂到指定互动（结算时挂到刚结束的那场会）。"""
         mid = self.store.add_message(cid, "user", text, now=self.clock())  # 先保存原话，任何失败都不丢
@@ -155,6 +155,8 @@ class Intake:
                         "is_interpretation": x["is_interpretation"], "behavior_key": x.get("behavior_key"),
                         "occurred": x.get("occurred"), "interaction_id": iid, "source_mode": mode,
                         "prompted_by_model": prompted}
+            if scenes:
+                proposed["scenes"] = list(scenes)  # 场景标签：确认时记到这次互动上
             self.store.save_draft(did, mid, [{"message_id": mid, "start": span[0], "end": span[1]}], proposed,
                                   now=self.clock())
             draft_ids.append(did)
@@ -196,7 +198,7 @@ class Intake:
             did = f"D{len(self.store.drafts()) + 1}"
             self.store.save_draft(did, mid, [{"message_id": mid, "start": 0, "end": len(text)}],
                                   {"target_table": "interaction", "with_name": pm["with"], "with_id": who[1],
-                                   "when": pm.get("when") or ""}, now=self.clock())
+                                   "when": pm.get("when") or "", **({"scenes": list(scenes)} if scenes else {})}, now=self.clock())
             draft_ids.append(did)
         for hy in data.get("hypotheses", []):
             span, who = find_span(text, hy["source_quote"]), self.resolve(hy["subject"])
@@ -360,6 +362,7 @@ class Intake:
                                        prompted_by_model=b.get("prompted_by_model", False),
                                        summary=d["proposed"].get("content", ""))
         self.store.save_observation(o, d["source_spans"], did)
+        self._apply_scenes(iid, b.get("scenes"))
         if b.get("behavior_key") and b.get("occurred") is not None:
             self._ensure_opportunity(iid, sub, b["behavior_key"], b["occurred"])
         self.store.save_draft(did, d["message_id"], d["source_spans"], b, "edited" if edits else "confirmed", o.id,
@@ -399,6 +402,12 @@ class Intake:
         w.close_commitment(c.id, b["status"], closing_obs_id=o.id)
         return c.id
 
+    def _apply_scenes(self, iid: str, scenes) -> None:
+        """场景标签挂在互动上；同一次互动的多条观察共享它，重复确认不重复加。"""
+        if scenes and iid in self.world.interactions:
+            cur = self.world.interactions[iid].setdefault("scenes", [])
+            cur.extend(s for s in scenes if s not in cur)
+
     def _confirm_structural(self, tt: str, b: dict) -> str:
         w = self.world
         if tt == "matter":
@@ -408,6 +417,7 @@ class Intake:
             iid = f"MTG-{who}-{len([i for i in w.interactions if i.startswith('MTG-')]) + 1}"
             w.add_interaction(iid, f"与 {b['with_name']} 的会谈（{b['when']}）" if b["when"] else f"与 {b['with_name']} 的会谈", "planned")
             w.interactions[iid]["with"] = who
+            self._apply_scenes(iid, b.get("scenes"))
             return iid
         if tt == "hypothesis":
             who = self._person_for(b["subject_name"], b["subject_id"])

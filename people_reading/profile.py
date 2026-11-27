@@ -79,7 +79,7 @@ def build_profile(w: World, person_id: str, store=None) -> dict:
         obs = [o for o in w.observations.values() if o.interaction_id == iid and person_id in (o.subject_person_id, o.reporter_id)]
         if not obs:
             continue
-        timeline.append({"interaction": iid, "label": it.get("label", ""), "day": it.get("day", 0), "day_label": fmt_day(it.get("day", 0)), "observations": [
+        timeline.append({"interaction": iid, "scenes": list(it.get("scenes", [])), "label": it.get("label", ""), "day": it.get("day", 0), "day_label": fmt_day(it.get("day", 0)), "observations": [
             {"id": o.id, "kind": o.kind, "reporter": w.persons[o.reporter_id].display_name if o.reporter_id in w.persons else o.reporter_id,
              "content": o.content, "interpretation": o.is_interpretation,
              "mode": "当时记录" if o.source_mode == "contemporaneous" else "事后回忆",
@@ -134,13 +134,19 @@ def render_html(pf: dict, rd=None) -> str:
     h.append("<h3>各议题中的角色</h3>" + li(roles))
     h.append(f"<h3>判断卡 <span class='mut'>{html.escape(pf['badge']['text'])}</span></h3>")
     h.append(li([e(c["text"]) for c in pf["judgment_cards"]] + ([e(f"三维对照 {k}：{v}") for k, v in pf["dimensions"].items()] if pf["dimensions"] else [])))
+    scene_names = sorted({s for t in pf["timeline"] for s in t.get("scenes", [])})
     tl = []
     for t in pf["timeline"]:
+        idx = ",".join(str(scene_names.index(s)) for s in t.get("scenes", []))  # 属性里只放序号，不放场景名（遮挡时不泄露）
+        tags = "".join(f" <span class='tag'>{e(s)}</span>" for s in t.get("scenes", []))
         for o in t["observations"]:
             q = "；".join(o["quotes"])
-            tl.append(e(f"{t['day_label']} {t['label']}｜{o['mode']}｜{o['reporter']}：{o['content']}") +
-                      (" <span class='mut'>[解读]</span>" if o["interpretation"] else "") + f"<br><span class='mut' data-evidence='{e(q)}'>原话：{e(q)}</span>")
-    h.append("<h3>互动时间线</h3>" + li(tl))
+            tl.append((idx, e(f"{t['day_label']} {t['label']}｜{o['mode']}｜{o['reporter']}：{o['content']}") + tags +
+                       (" <span class='mut'>[解读]</span>" if o["interpretation"] else "") + f"<br><span class='mut' data-evidence='{e(q)}'>原话：{e(q)}</span>"))
+    bar = ("<div class='chips sfilter' role='group' aria-label='按场景筛选'>" + "".join(
+        f"<button type='button' class='chip scn' aria-pressed='false' data-sf='{i}'>{e(n)}</button>" for i, n in enumerate(scene_names)) + "</div>") if scene_names else ""
+    lst = ("<ul>" + "".join(f"<li data-scenes='{ix}'>{x}</li>" for ix, x in tl) + "</ul>") if tl else "<p class='mut'>暂无</p>"
+    h.append("<h3>互动时间线</h3>" + bar + lst)
     h.append("<h3>预测复盘与修订</h3>" + li([e(f"#{x['id']} {x['kind']}｜{x['subject']}｜{x['reason']}") for x in pf["revisions"]]))
     h.append("<h3>解读</h3>" + li([e(f"{x['id']} {x['skill']}：{x['question']}") + (" <b>依据已变化</b>" if x["stale"] else "") for x in pf["interpretations"]]))
     led = pf["commitments"]

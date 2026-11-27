@@ -30,7 +30,7 @@ aside a:hover{background:var(--mizu)}aside a.on{background:var(--mizu);color:var
 .pcard{display:block;padding:var(--space-2) 0;border-top:1px solid var(--line);color:var(--ink);text-decoration:none;font-size:14px}
 .tabs{display:flex;gap:var(--space-2);flex-wrap:wrap;margin:var(--space-2) 0}.tab.on{background:var(--ai);border-color:var(--ai);color:var(--on-ai)}.gpanel{display:none}.gpanel.on{display:block}
 table{border-collapse:collapse;width:100%;font-size:13px;display:block;overflow-x:auto}th,td{border:0;border-bottom:1px solid var(--line);padding:var(--space-1) var(--space-2);text-align:left}th{font:500 11px/16px var(--font-sans);letter-spacing:.12em;color:var(--ink-muted)}
-nav.bottom{display:none}#drawer{position:fixed;right:0;top:0;bottom:0;width:320px;background:var(--surface-raised);border-left:1px solid var(--line);padding:var(--space-4);transform:translateX(100%);transition:transform .15s;overflow:auto;z-index:20}
+nav.bottom{display:none}.tag{display:inline-block;margin-left:6px;padding:0 8px;border-radius:var(--radius-sm);background:var(--mizu);color:var(--ai);font-size:12px;line-height:20px}li[hidden]{display:none}.chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}.chip{min-height:26px;padding:0 9px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--ink);font:500 12px var(--font-sans);cursor:pointer}.chip[aria-pressed=true]{background:var(--mizu);border-color:var(--hanada);color:var(--ai)}#drawer{position:fixed;right:0;top:0;bottom:0;width:320px;background:var(--surface-raised);border-left:1px solid var(--line);padding:var(--space-4);transform:translateX(100%);transition:transform .15s;overflow:auto;z-index:20}
 #drawer.open{transform:none}details{margin:var(--space-1) 0}
 @media(prefers-reduced-motion:reduce){#drawer{transition:none}}
 @media(max-width:720px){aside{display:none}nav.bottom{display:flex;position:fixed;bottom:0;left:0;right:0;border-top:1px solid var(--line);background:var(--surface-raised);z-index:10}
@@ -52,6 +52,8 @@ SHELL_JS = """
  }
  addEventListener('hashchange',route);route();
  document.addEventListener('click',function(ev){
+  var sf=ev.target.closest&&ev.target.closest('[data-sf]');
+  if(sf){sf.setAttribute('aria-pressed',sf.getAttribute('aria-pressed')==='true'?'false':'true');var sec=sf.closest('section'),on=[].map.call(sec.querySelectorAll('[data-sf][aria-pressed=true]'),function(x){return x.dataset.sf});[].forEach.call(sec.querySelectorAll('li[data-scenes]'),function(li){var mine=(li.dataset.scenes||'').split(',');li.hidden=on.length>0&&!on.some(function(k){return mine.indexOf(k)>=0})});return}
   var t=ev.target.closest&&ev.target.closest('.tab');
   if(t){var box=t.closest('[data-no-capture]');[].forEach.call(box.querySelectorAll('.tab'),function(x){x.classList.toggle('on',x===t)});
    [].forEach.call(box.querySelectorAll('.gpanel'),function(p){p.classList.toggle('on',p.dataset.sub===t.dataset.tab)});}

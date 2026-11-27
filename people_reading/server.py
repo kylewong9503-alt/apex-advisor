@@ -26,6 +26,7 @@ from .llm import RemoteModel, make_model
 from .engine import EngineError
 from .premeeting import CONFIDENCE, RULE_P, PreMeeting, make_premise, profile
 from .settle_flow import SettlementSession
+from . import scenes as SC
 from .world import SELF as SELF_ID
 from .privacy import AppLock, Locked, Redactor, TooManyAttempts
 from .shell import render_app
@@ -337,6 +338,25 @@ class App:
         people.sort(key=lambda p: (-freq.get(p.id, 0), -order[p.id]))
         return [(self.tok("who", p.id), rd.p(p.id)) for p in people[:12]]
 
+    def scene_chips(self, rd) -> list:
+        return [(self.tok("scene", n), rd.t(n) if rd.masked else n) for n in SC.all_scenes(self.lock.store)]
+
+    def _scenes(self, toks: str, newscene: str) -> tuple:
+        """页面上选的场景：令牌对不上就拒绝；自定义的当场加进你的场景库（上限 12 个）。"""
+        names = []
+        if newscene.strip():
+            try:
+                names.append(SC.add_custom(self.lock.store, newscene))
+            except ValueError:
+                raise KeyError("scene")
+        known = {self.tok("scene", n): n for n in SC.all_scenes(self.lock.store)}
+        for t in [x for x in toks.split(",") if x]:
+            if t not in known:
+                raise KeyError("scene")
+            if known[t] not in names:
+                names.append(known[t])
+        return tuple(names)
+
     def _who(self, tok: str, newname: str) -> Optional[str]:
         """页面上选的“这是在说谁”：返回人物 id；选“新的人”就当场建一个。令牌对不上就拒绝，不猜。"""
         w = self._world()
@@ -359,7 +379,7 @@ class App:
         raise KeyError("who")
 
     def _say_step(self, q: str, cue: str, rd) -> dict:
-        return open_ask(q, cue=cue, act={"url": "/say", "fields": {}}, people=self.people_chips(rd))
+        return open_ask(q, cue=cue, act={"url": "/say", "fields": {}}, people=self.people_chips(rd), scenes=self.scene_chips(rd))
 
     def say_html(self) -> str:
         """随时记一句：不论现在在哪个流程里。"""
@@ -638,13 +658,14 @@ class App:
     def clarify_skip(self) -> None:
         self.lock.store.set_pending(self.CID, None)
 
-    def say(self, text: str, answering: bool = False, who: str = "", newname: str = "") -> None:
+    def say(self, text: str, answering: bool = False, who: str = "", newname: str = "", scenes: str = "", newscene: str = "") -> None:
         text = text.strip()
         if text and self.intake is not None:
             about = self._who(who, newname) if (who or newname.strip()) else None
+            sc = self._scenes(scenes, newscene)
             if not answering:  # 独立的“记一句”不是回答：不续接上一个追问，也不并进同一个互动
                 self.lock.store.set_pending(self.CID, None)
-            r = self.intake.handle(self.CID, text, about=about)
+            r = self.intake.handle(self.CID, text, about=about, scenes=sc)
             self.lock.store.sync_world(self._world())
             if r.fallback:
                 why = self.intake.last_error
@@ -813,7 +834,8 @@ def make_handler(app: App):
                 with app.mutex:
                     if path == "/say":
                         app.say((form.get("text") or [""])[0][:4000], answering=(form.get("answer") or [""])[0] == "1",
-                                who=(form.get("who") or [""])[0], newname=(form.get("newname") or [""])[0])
+                                who=(form.get("who") or [""])[0], newname=(form.get("newname") or [""])[0],
+                                scenes=(form.get("scenes") or [""])[0], newscene=(form.get("newscene") or [""])[0])
                     elif path == "/clarify/skip":
                         app.clarify_skip()
                     elif path == "/confirm_many":

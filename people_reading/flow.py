@@ -36,9 +36,10 @@ def check(q: str, items: list, *, cue: str = "", act: Optional[dict] = None) -> 
     return {"kind": "check", "q": q, "cue": cue, "items": [dict(id=i, text=t, sub=s) for i, t, s in items], "act": act}
 
 
-def open_ask(q: str, *, cue: str = "", act: Optional[dict] = None, skip: Optional[dict] = None, people: Optional[list] = None) -> dict:
+def open_ask(q: str, *, cue: str = "", act: Optional[dict] = None, skip: Optional[dict] = None, people: Optional[list] = None,
+             scenes: Optional[list] = None) -> dict:
     """people：人物标签 [(令牌, 显示名)]。给了就在输入框上方出现一排标签（单选，可不选）和“+ 新的人”。"""
-    return {"kind": "open", "q": q, "cue": cue, "act": act, "skip": skip, "people": people}
+    return {"kind": "open", "q": q, "cue": cue, "act": act, "skip": skip, "people": people, "scenes": scenes}
 
 
 def build_prep_steps(v: dict) -> list:
@@ -179,7 +180,7 @@ textarea{width:100%;font:inherit;font-size:20px;line-height:1.7;padding:16px;bor
 .bn{position:fixed;top:0;left:0;right:0;z-index:5;background:var(--kin-soft);color:var(--kin);font-size:12px;line-height:20px;text-align:center;padding:2px 8px}
 .srs{border-bottom:1px solid var(--line);max-width:620px}.sr{display:flex;gap:20px;padding:12px 0;border-top:1px solid var(--line);font-size:16px;line-height:1.6}.sr span:first-child{width:56px;flex:none;color:var(--ink-muted)}
 .nt{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:6;max-width:min(560px,92vw);background:var(--ink);color:var(--surface);padding:12px 18px;border-radius:var(--radius-md);font-size:14px;line-height:22px}
-.qt{margin:0 0 20px;padding:0 0 0 16px;border-left:2px solid var(--line-strong);color:var(--ink-muted);font-size:15px;line-height:26px}.rd{list-style:none;margin:0;padding:0}.rd li{display:flex;gap:12px;align-items:flex-start;padding:14px 0;border-top:1px solid var(--line);font-size:18px;line-height:1.5}.rd li:last-child{border-bottom:1px solid var(--line)}.rd small{display:block;margin-top:2px;font-size:13px;color:var(--ink-muted)}.rd .mk-model{margin-top:9px}\n.who{margin:0 0 16px}.who .cue{margin-bottom:8px}.chips{display:flex;flex-wrap:wrap;gap:8px}.chip{min-height:36px;padding:0 14px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--ink);font:500 14px var(--font-sans);cursor:pointer}.chip[aria-pressed=true]{background:var(--ai);border-color:var(--ai);color:var(--on-ai)}.chip.new{border-style:dashed}.newname{margin-top:8px;width:100%;font:inherit;font-size:16px;padding:8px 12px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--ink)}
+.qt{margin:0 0 20px;padding:0 0 0 16px;border-left:2px solid var(--line-strong);color:var(--ink-muted);font-size:15px;line-height:26px}.rd{list-style:none;margin:0;padding:0}.rd li{display:flex;gap:12px;align-items:flex-start;padding:14px 0;border-top:1px solid var(--line);font-size:18px;line-height:1.5}.rd li:last-child{border-bottom:1px solid var(--line)}.rd small{display:block;margin-top:2px;font-size:13px;color:var(--ink-muted)}.rd .mk-model{margin-top:9px}\n.who,.where{margin:0 0 12px}.who .cue,.where .cue{margin-bottom:6px}.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{min-height:30px;padding:0 11px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--ink);font:500 13px var(--font-sans);cursor:pointer}.chip.scn{min-height:26px;padding:0 9px;font-size:12px;border-color:var(--line)}.chip.scn[aria-pressed=true]{background:var(--mizu);border-color:var(--hanada);color:var(--ai)}.newscn{border-style:dashed}.newscene{margin-top:6px;width:100%;font:inherit;font-size:14px;padding:6px 10px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--ink)}.chip[aria-pressed=true]{background:var(--ai);border-color:var(--ai);color:var(--on-ai)}.chip.new{border-style:dashed}.newname{margin-top:6px;width:100%;font:inherit;font-size:14px;padding:6px 10px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--ink)}
 .line{font:600 clamp(24px,3vw,44px)/1.45 var(--font-sans);margin:0 0 28px}
 .why{margin:0;font-size:17px;line-height:1.9;color:var(--ink-muted);max-width:560px}
 .big{font:600 clamp(56px,7vw,88px)/1 var(--font-sans);color:var(--ai);font-variant-numeric:tabular-nums}
@@ -194,13 +195,14 @@ function go(i){i=Math.max(1,Math.min(n,i));S.forEach(function(s,k){s.classList.t
 function cur(){var m=(location.hash||'#/1').match(/(\\d+)/);return m?+m[1]:1}
 function next(){location.hash='#/'+Math.min(n,cur()+1)}
 addEventListener('hashchange',function(){go(cur())});go(cur());
-document.addEventListener('click',function(e){var ch0=e.target.closest('.chip');if(ch0){var box=ch0.closest('.who'),on=ch0.getAttribute('aria-pressed')==='true';[].forEach.call(box.querySelectorAll('.chip'),function(x){x.setAttribute('aria-pressed','false')});ch0.setAttribute('aria-pressed',on?'false':'true');var inp=box.querySelector('.newname');var isNew=ch0.hasAttribute('data-new')&&!on;inp.hidden=!isNew;if(isNew)inp.focus();return}
+document.addEventListener('click',function(e){var sc0=e.target.closest('.chip.scn');if(sc0){var on0=sc0.getAttribute('aria-pressed')==='true';sc0.setAttribute('aria-pressed',on0?'false':'true');if(sc0.hasAttribute('data-newscn')){var ni=sc0.closest('.where').querySelector('.newscene');ni.hidden=on0;if(!on0)ni.focus()}return}
+ var ch0=e.target.closest('.chip');if(ch0){var box=ch0.closest('.who'),on=ch0.getAttribute('aria-pressed')==='true';[].forEach.call(box.querySelectorAll('.chip'),function(x){x.setAttribute('aria-pressed','false')});ch0.setAttribute('aria-pressed',on?'false':'true');var inp=box.querySelector('.newname');var isNew=ch0.hasAttribute('data-new')&&!on;inp.hidden=!isNew;if(isNew)inp.focus();return}
  var o=e.target.closest('.opt');
  if(o&&o.getAttribute('role')==='checkbox'){o.setAttribute('aria-checked',o.getAttribute('aria-checked')==='true'?'false':'true');return}
  if(o){[].forEach.call(o.parentNode.children,function(x){x.setAttribute('aria-checked',x===o?'true':'false')});var b=o.closest('.step').querySelector('[data-next]');b&&(b.disabled=false);return}
  var a=e.target.closest('[data-act]');
  if(a){e.preventDefault();var d=JSON.parse(a.dataset.fields||'{}'),st=a.closest('.step'),ch=st.querySelector('.opt[aria-checked=true]'),ta=st.querySelector('textarea');
-  if(ch)d.choice=[].indexOf.call(ch.parentNode.children,ch);var pc=st.querySelector('.chip[aria-pressed=true]:not([data-new])');if(pc)d.who=pc.dataset.tok;var nn=st.querySelector('.newname');if(nn&&!nn.hidden&&nn.value.trim())d.newname=nn.value.trim();var cks=st.querySelectorAll('.opt[role=checkbox]');if(cks.length)d.ids=[].filter.call(cks,function(x){return x.getAttribute('aria-checked')==='true'}).map(function(x){return x.dataset.id}).join(',');if(ta)d.text=ta.value;if(a.hasAttribute('data-once')&&a.disabled)return;a.disabled=true;a.dataset.t=a.textContent;a.textContent='处理中…';a.setAttribute('aria-busy','true');
+  if(ch)d.choice=[].indexOf.call(ch.parentNode.children,ch);var sp=[].filter.call(st.querySelectorAll('.chip.scn[aria-pressed=true]:not([data-newscn])'),function(x){return x.dataset.stok}).map(function(x){return x.dataset.stok});if(sp.length)d.scenes=sp.join(',');var ns=st.querySelector('.newscene');if(ns&&!ns.hidden&&ns.value.trim())d.newscene=ns.value.trim();var pc=st.querySelector('.chip[aria-pressed=true]:not([data-new]):not(.scn)');if(pc)d.who=pc.dataset.tok;var nn=st.querySelector('.newname');if(nn&&!nn.hidden&&nn.value.trim())d.newname=nn.value.trim();var cks=st.querySelectorAll('.opt[role=checkbox]');if(cks.length)d.ids=[].filter.call(cks,function(x){return x.getAttribute('aria-checked')==='true'}).map(function(x){return x.dataset.id}).join(',');if(ta)d.text=ta.value;if(a.hasAttribute('data-once')&&a.disabled)return;a.disabled=true;a.dataset.t=a.textContent;a.textContent='处理中…';a.setAttribute('aria-busy','true');
   fetch(a.dataset.act,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(d)}).then(function(r){
    if(!r.ok)throw 0;if(a.hasAttribute('data-once')){a.textContent='已记下'}else{location.href='/'}}).catch(function(){a.disabled=false;a.removeAttribute('aria-busy');a.textContent='没成功，再试一次'});return}
  if(e.target.closest('[data-next]')){e.preventDefault();next()}});
@@ -267,6 +269,11 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
                 chips = (f"<div class='who' role='group' aria-label='这件事说的是谁'><div class='cue'>这是在说谁？（可以不选）</div>"
                          f"<div class='chips'>{cs}<button type='button' class='chip new' aria-pressed='false' data-new>＋ 新的人</button></div>"
                          f"<input type='text' class='newname' aria-label='新的人的名字或代号' placeholder='名字或代号' hidden></div>")
+            if s.get("scenes") is not None:
+                sc = "".join(f"<button type='button' class='chip scn' aria-pressed='false' data-stok='{E(tok)}'>{e(label)}</button>" for tok, label in s["scenes"])
+                chips += (f"<div class='where' role='group' aria-label='这是在什么场合'><div class='cue'>什么场合？（可多选，可不选）</div>"
+                          f"<div class='chips'>{sc}<button type='button' class='chip scn newscn' aria-pressed='false' data-newscn>＋</button></div>"
+                          f"<input type='text' class='newscene' aria-label='自定义场景名' placeholder='场景名（≤12 字）' maxlength='12' hidden></div>")
             core = f"{cue}<h1>{e(s['q'])}</h1>{chips}<textarea rows='5' aria-label='你的回答' placeholder='按你记得的说就行，原话越接近越好'></textarea>"
             sk = f"<button type='button' class='btn q'{actattr(s['skip'])}>跳过</button>" if s.get("skip") else "<span></span>"
             ft = f"<div class='ft'>{sk}<button type='button' class='btn p' data-next{actattr(s.get('act'))}>提交</button></div>"

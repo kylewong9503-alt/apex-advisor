@@ -701,3 +701,117 @@ def test_real_browser_new_person_tag_is_submitted(tmp_path):
         assert any(p.display_name == "Judy" for p in s.app.w.persons.values())
     finally:
         s.shutdown(); s.server_close()
+
+
+# ───────── 场景标签：筛选和分类用，不影响分析 ─────────
+def _scene_toks(body):
+    import re
+    return dict((l, t) for t, l in re.findall(r"class='chip scn' aria-pressed='false' data-stok='([^']*)'>([^<]*)</button>", body))
+
+
+def test_scene_tags_are_attached_to_the_interaction_and_persist(tmp_path):
+    from people_reading.tests.test_step2 import extraction
+    d = {"kind": "behavior", "reporter": "我", "subject": "F", "content": "F 在会上追问", "is_interpretation": False,
+         "source_quote": "F 在会上追问负责人", "behavior_key": None, "occurred": None}
+    s = _who_server(tmp_path, [extraction(drafts=[d])])
+    try:
+        ck = login(s)
+        toks = _scene_toks(req(s, "GET", "/", headers=ck)[2])
+        assert set(toks) >= {"开会", "一对一", "汇报", "评审", "邮件/消息", "电话", "饭局/闲聊", "其他"}
+        assert req(s, "POST", "/say", f"text={quote('F 在会上追问负责人')}&scenes={toks['开会']},{toks['汇报']}", headers=ck)[0] == 303
+        dr = s.app.lock.store.drafts(status="pending")[0]
+        assert dr["proposed"]["scenes"] == ["开会", "汇报"]
+        ref = s.app.intake.confirm(dr["id"])
+        o = next(o for o in s.app.w.observations.values() if o.id == ref)
+        assert s.app.w.interactions[o.interaction_id]["scenes"] == ["开会", "汇报"]
+        w2, _ = s.app.lock.store.load_world()  # 重开后还在
+        assert w2.interactions[o.interaction_id]["scenes"] == ["开会", "汇报"]
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_custom_scene_created_once_capped_and_bad_tokens_rejected(tmp_path):
+    s = _who_server(tmp_path, ["不是 JSON"] * 30)  # 模型给不出结果也无妨：这里只看标签本身
+    try:
+        ck = login(s)
+        assert req(s, "POST", "/say", f"text={quote('x')}&newscene={quote('团建')}", headers=ck)[0] in (303,)
+        assert "团建" in _scene_toks(req(s, "GET", "/say", headers=ck)[2])
+        req(s, "POST", "/say", f"text={quote('y')}&newscene={quote('团建')}", headers=ck)
+        from people_reading import scenes as SC
+        assert SC.custom_scenes(s.app.lock.store) == ["团建"]  # 同名不重复
+        assert SC.add_custom(s.app.lock.store, "一二三四五六七八九十十一十二十三十四")  == "一二三四五六七八九十十一"  # 过长截断
+        for i in range(SC.MAX_CUSTOM):
+            try:
+                SC.add_custom(s.app.lock.store, f"场景{i}")
+            except ValueError:
+                break
+        assert len(SC.custom_scenes(s.app.lock.store)) == SC.MAX_CUSTOM
+        assert req(s, "POST", "/say", f"text={quote('z')}&newscene={quote('第十三个')}", headers=ck)[0] == 409  # 满了
+        assert req(s, "POST", "/say", f"text={quote('z')}&scenes=bogus", headers=ck)[0] == 409
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_scene_labels_masked_and_profile_shows_and_filters_by_scene(tmp_path):
+    from people_reading.tests.test_step2 import extraction
+    d = {"kind": "behavior", "reporter": "我", "subject": "F", "content": "F 追问", "is_interpretation": False,
+         "source_quote": "F 追问负责人", "behavior_key": None, "occurred": None}
+    d2 = dict(d, content="F 发邮件", source_quote="F 发了邮件")
+    s = _who_server(tmp_path, [extraction(drafts=[d]), extraction(drafts=[d2])])
+    try:
+        ck = login(s)
+        toks = _scene_toks(req(s, "GET", "/", headers=ck)[2])
+        for text, sc in (("F 追问负责人", "开会"), ("F 发了邮件", "邮件/消息")):
+            req(s, "POST", "/say", f"text={quote(text)}&scenes={toks[sc]}", headers=ck)
+            for dr in s.app.lock.store.drafts(status="pending"):
+                s.app.intake.confirm(dr["id"])
+        lib = req(s, "GET", "/library", headers=ck)[2].split("<script>")[0]
+        assert "class='tag'>开会<" in lib and "class='tag'>邮件/消息<" in lib and "data-sf=" in lib
+        import re
+        assert re.search(r"<li data-scenes='\d'>", lib)  # 属性里只有序号
+        req(s, "POST", "/mask", headers=ck)
+        masked = req(s, "GET", "/library", headers=ck)[2].split("<script>")[0]
+        assert "开会" not in masked and "邮件/消息" not in masked
+        say = req(s, "GET", "/say", headers=ck)[2].split("<script>")[0]
+        assert "开会" not in say and "data-stok=" in say  # 遮挡时场景名也不输出
+    finally:
+        s.shutdown(); s.server_close()
+
+
+BROWSER_SCENE_JS = r"""
+const {chromium}=require('playwright');(async()=>{const [port,pw]=process.argv.slice(2);
+const b=await chromium.launch();const p=await b.newPage({viewport:{width:390,height:844}});const out={errors:[],posts:[]};
+p.on('pageerror',e=>out.errors.push(e.message));p.on('console',m=>{if(m.type()==='error')out.errors.push(m.text())});
+p.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/say'))out.posts.push(r.postData())});
+await p.goto('http://127.0.0.1:'+port+'/unlock');await p.fill('input[name=passphrase]',pw);await p.click('button[type=submit]');await p.waitForURL('**/');
+out.chipH=await p.evaluate(()=>[document.querySelector('.step.on .chip:not(.scn)').getBoundingClientRect().height,document.querySelector('.step.on .chip.scn').getBoundingClientRect().height]);
+await p.click('.step.on .chip.scn >> nth=0');await p.click('.step.on .chip.scn >> nth=2');
+await p.click('.step.on .newscn');out.inputShown=await p.evaluate(()=>!document.querySelector('.step.on .newscene').hidden);
+await p.fill('.step.on .newscene','团建');await p.fill('textarea','F 在团建上追问负责人');await p.click('.step.on button.btn.p');await p.waitForTimeout(1500);
+console.log(JSON.stringify(out));await b.close()})();
+"""
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="需要 node + playwright")
+def test_real_browser_scene_tags_are_small_and_submitted(tmp_path):
+    from people_reading.llm import ScriptedModel
+    from people_reading.tests.test_step2 import extraction
+    d = {"kind": "behavior", "reporter": "我", "subject": "F", "content": "追问", "is_interpretation": False,
+         "source_quote": "F 在团建上追问负责人", "behavior_key": None, "occurred": None}
+    s = _who_server(tmp_path, [extraction(drafts=[d])])
+    js = tmp_path / "sc.js"; js.write_text(BROWSER_SCENE_JS)
+    try:
+        r = subprocess.run(["node", str(js), str(s.server_address[1]), __import__("people_reading.tests.test_step4", fromlist=["x"]).PASS],
+                           capture_output=True, text=True, timeout=90)
+        if "Cannot find module" in r.stderr:
+            pytest.skip("没有 playwright")
+        import json as _j
+        out = _j.loads(r.stdout.strip().splitlines()[-1])
+        assert out["errors"] == [] and out["inputShown"] is True
+        assert out["chipH"][0] <= 32 and out["chipH"][1] <= 28  # 标签都做得很小
+        post = out["posts"][0]
+        assert "newscene=" in post and post.count("scenes=") >= 1, post
+        dr = s.app.lock.store.drafts(status="pending")[0]
+        assert "团建" in dr["proposed"]["scenes"] and len(dr["proposed"]["scenes"]) == 3
+    finally:
+        s.shutdown(); s.server_close()
