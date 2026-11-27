@@ -80,21 +80,15 @@ def wave_band(r: int = 10, rings: int = 3, width: int = 960) -> str:
     return "".join(parts)
 
 
-# 标志：一面柄镜（Kagami = 鏡）。金茶镜框、水色镜面，镜面下部映着三道青海波，左上一道反光；只用令牌色的定值。
+# 标志：一面柄镜（Kagami = 鏡）。极简几何：藍底、白色镜面与镜柄、两道斜向反光（实心镜面，避免读成放大镜）。只用两种颜色。
 def mark_svg(size: int = 64, *, title: str = "") -> str:
     lab = f"<title>{title}</title>" if title else ""
     aria = "role='img' aria-label='Kagami'" if title else "aria-hidden='true' focusable='false'"
     return (f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' width='{size}' height='{size}' {aria}>{lab}"
-            "<defs><clipPath id='kg-glass'><circle cx='32' cy='26' r='15'/></clipPath></defs>"
-            "<rect width='64' height='64' fill='#14243d'/>"
-            "<path d='M30 43h4l1.5 15h-7z' fill='#d4a659'/>"
-            "<circle cx='32' cy='26' r='19' fill='#d4a659'/>"
-            "<circle cx='32' cy='26' r='15' fill='#d5e2ea'/>"
-            "<g clip-path='url(#kg-glass)' fill='none' stroke='#35668f' stroke-width='1.4'>"
-            "<path d='M14 40a6 6 0 0 1 12 0M26 40a6 6 0 0 1 12 0M38 40a6 6 0 0 1 12 0'/>"
-            "<path d='M8 35a6 6 0 0 1 12 0M20 35a6 6 0 0 1 12 0M32 35a6 6 0 0 1 12 0M44 35a6 6 0 0 1 12 0'/></g>"
-            "<path d='M22 24l9-9M25 27l5-5' fill='none' stroke='#fbf9f4' stroke-width='2.2' stroke-linecap='round'/>"
-            "</svg>")
+            "<rect width='64' height='64' rx='14' fill='#1f3b61'/>"
+            "<circle cx='32' cy='27' r='16' fill='#ffffff'/>"
+            "<rect x='29' y='41' width='6' height='13' rx='3' fill='#ffffff'/>"
+            "<path d='M23 27l9-9M27 31l9-9' stroke='#1f3b61' stroke-width='2.6' stroke-linecap='round' opacity='.35'/></svg>")
 
 
 def mark_data_uri() -> str:
