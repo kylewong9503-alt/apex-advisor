@@ -45,7 +45,7 @@ def test_flow_is_deterministic_and_has_no_external_resources():
     assert a == render_flow(prep, rd=Redactor(w, "code"))
     import re as _re
     for href in _re.findall(r"<link[^>]*href='([^']*)'", a):
-        assert href.startswith("data:")  # 唯一的 link 是内嵌的标志图标
+        assert href.startswith("data:") or href == "fonts.css"  # 只有内嵌的标志图标和本站的字体样式表
     for bad in ("http://", "https://", "@import", "src="):
         assert bad not in a.replace("http://www.w3.org", "")
 

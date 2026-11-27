@@ -17,7 +17,7 @@ import re
 from typing import Optional
 
 from .privacy import NO_CAPTURE_META, PRINT_GUARD_CSS, Redactor
-from .theme import BRAND, TOKENS_CSS, enso_path, mark_data_uri, mark_svg
+from .theme import BRAND, FONT_LINK, TOKENS_CSS, enso_path, mark_data_uri, mark_svg
 
 E = html.escape
 MARKS = {"you": "mk-you", "model": "mk-model", "rec": "mk-rec", "": ""}
@@ -147,7 +147,7 @@ def steps_dots(n: int, total: int) -> str:
 # ───────────────────────── 渲染 ─────────────────────────
 FLOW_CSS = TOKENS_CSS + """
 *{box-sizing:border-box}html,body{height:100%}
-body{margin:0;background:var(--surface);color:var(--ink);font:15px/26px var(--font-sans);font-feature-settings:'tnum' 1,'cv11' 1}
+body{margin:0;background:var(--surface);color:var(--ink);font:15px/26px var(--font-sans);font-feature-settings:'tnum' 1}
 .step{display:none;height:100vh;min-height:560px}.step.on{display:flex}
 .pane{flex:none;width:calc(38% - 32px);max-width:528px;margin:16px;border-radius:24px;overflow:hidden;background:var(--surface)}.pane.dark{background:var(--kon)}
 .step.top{flex-direction:column}.step.top .pane{width:auto;max-width:none;height:214px}
@@ -348,4 +348,4 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
     defs = f"<svg width='0' height='0' style='position:absolute' aria-hidden='true'><defs>{_scale_defs()}</defs></svg>"
     ttl = BRAND if masked else title
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>{E(ttl)}</title>{NO_CAPTURE_META}<link rel='icon' href='{mark_data_uri()}'>{head_extra}<style>{FLOW_CSS}{PRINT_GUARD_CSS}</style></head><body>{defs}{(f"<div class='bn' role='status'>{E(banner)}</div>" if banner else '')}{(f"<div class='nt' role='alert'>{E(notice)}</div>" if notice else '')}{''.join(secs)}<script>{FLOW_JS}</script></body></html>")
+            f"<title>{E(ttl)}</title>{NO_CAPTURE_META}<link rel='icon' href='{mark_data_uri()}'>{FONT_LINK}{head_extra}<style>{FLOW_CSS}{PRINT_GUARD_CSS}</style></head><body>{defs}{(f"<div class='bn' role='status'>{E(banner)}</div>" if banner else '')}{(f"<div class='nt' role='alert'>{E(notice)}</div>" if notice else '')}{''.join(secs)}<script>{FLOW_JS}</script></body></html>")

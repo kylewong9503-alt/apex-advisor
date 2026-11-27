@@ -382,16 +382,23 @@ def test_multiple_behaviors_on_one_meeting_ask_which_to_settle_first(tmp_path):
         s.shutdown(); s.server_close()
 
 
-def test_inter_font_served_locally_without_login_and_csp_allows_only_self(srv):
-    st, h, body = req(srv, "GET", "/inter.woff2")
-    assert st == 200 and h["Content-Type"] == "font/woff2" and "max-age" in h["Cache-Control"]
-    raw = open(__import__("people_reading.theme", fromlist=["x"]).FONT_FILE, "rb").read()
-    assert raw[:4] == b"wOF2" and len(raw) < 300_000  # 真是 woff2，且不大
+def test_serif_font_served_locally_without_login_and_csp_allows_only_self(srv):
+    import re
+    from people_reading.theme import FONTS_CSS_FILE, FONTS_DIR
+    st, h, css = req(srv, "GET", "/fonts.css")
+    assert st == 200 and h["Content-Type"].startswith("text/css") and "max-age" in h["Cache-Control"]
+    names = set(re.findall(r"url\(fonts/([^)]*)\)", css))
+    assert names and all((FONTS_DIR / n).is_file() for n in names)  # 样式表里引用的每个字体文件都真的存在
+    for n in ("noto-serif-sc-latin-wght-normal.woff2", sorted(names)[0]):
+        st, h, _ = req(srv, "GET", "/fonts/" + n)
+        assert st == 200 and h["Content-Type"] == "font/woff2"
+    assert (FONTS_DIR / sorted(names)[0]).read_bytes()[:4] == b"wOF2"
+    assert req(srv, "GET", "/fonts/../server.py")[0] == 404 and req(srv, "GET", "/fonts/anything.woff2")[0] == 404  # 不能读到别的文件
     ck = login(srv)
     st, h, page = req(srv, "GET", "/", headers=ck)
-    assert "font-src 'self'" in h["Content-Security-Policy"] and "inter.woff2" in page
+    assert "font-src 'self'" in h["Content-Security-Policy"] and "href='fonts.css'" in page
     assert "fonts.googleapis" not in page and "https://" not in page
-    assert "Inter" in page and "Noto Sans SC" in page
+    assert "Noto Serif SC" in page and "Inter" not in page and "Noto Sans SC" not in page  # 全部是思源宋体
 
 
 def test_codespaces_host_only_inside_codespaces():

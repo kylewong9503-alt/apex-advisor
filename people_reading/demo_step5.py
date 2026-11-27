@@ -24,8 +24,6 @@ def build():
 
 
 def main() -> None:
-    from .theme import copy_font
-    copy_font(pathlib.Path(__file__).parent / "demo")
     w, st = build()
     (DIR / "step5.html").write_text(render_app(w, st, mode="code", toggle_href="step5_masked.html"), encoding="utf-8")
     masked = render_app(w, st, mode="masked", toggle_href="step5.html").replace("href='?mask=off'", "href='step5.html'")

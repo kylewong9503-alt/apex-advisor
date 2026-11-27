@@ -9,28 +9,24 @@ from __future__ import annotations
 
 import math
 
-# Inter（可变字体，拉丁子集，48KB，SIL OFL 1.1，见 static/LICENSE-Inter.txt）：英文与数字走 Inter，汉字回退 Noto Sans SC。
-# 字体文件由服务自己提供（/inter.woff2），页面不请求任何外部字体；演示页把它放在同目录。
-FONT_FACE = ("@font-face{font-family:'Inter';font-style:normal;font-weight:100 900;font-display:swap;src:url('inter.woff2') format('woff2');"
-             "unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}\n")
-FONT_FILE = __import__("pathlib").Path(__file__).parent / "static" / "inter.woff2"
+# 字体：思源宋体（Noto Serif SC，可变字重 200–900，SIL OFL 1.1，授权见 static/fonts/LICENSE-NotoSerifSC.txt）。
+# 汉字与英文数字都用它；由服务自己提供（/fonts.css 与 /fonts/*.woff2，按需只下载用到的那几片），页面不请求任何外部字体。
+# static/noto-serif-sc.css 里是 101 片 unicode-range 切片的 @font-face；浏览器只取页面上出现的字所在的切片。
+FONTS_DIR = __import__("pathlib").Path(__file__).parent / "static" / "fonts"
+FONTS_CSS_FILE = __import__("pathlib").Path(__file__).parent / "static" / "noto-serif-sc.css"
+FONT_LINK = "<link rel='stylesheet' href='fonts.css'>"
+SERIF = '"Noto Serif SC","Source Han Serif SC","Source Han Serif CN","Noto Serif CJK SC","Songti SC","STSong","SimSun",serif'
 
 
-def copy_font(dest_dir) -> None:
-    """把 Inter 放到演示页所在目录（静态演示用相对路径加载）。"""
-    import shutil
-    shutil.copyfile(FONT_FILE, __import__("pathlib").Path(dest_dir) / "inter.woff2")
-
-
-TOKENS_CSS = FONT_FACE + """:root{
+TOKENS_CSS = """:root{
 --surface:#f6f8fb;--surface-raised:#ffffff;--surface-sunk:#edf2f8;--line:#dbe3ec;--line-strong:#7b8696;
 --ink:#14213a;--ink-muted:#546072;--ai:#1f3b61;--on-ai:#ffffff;--kon:#1f3b61;--on-kon:#ffffff;
 --hanada:#5b8fc7;--asagi:#8fb5dc;--mizu:#e4eef8;--shu:#a63a23;--on-shu:#fbf9f4;--shu-soft:#f3dfd6;--kin:#7f5c1a;--kin-soft:#efe3c8;
 --focus:var(--ai);
 --space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:24px;--space-8:32px;--space-12:48px;--space-16:64px;
 --radius-sm:8px;--radius-md:14px;
---font-display:"Inter","Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
---font-sans:"Inter","Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+--font-display:"Noto Serif SC","Source Han Serif SC","Source Han Serif CN","Noto Serif CJK SC","Songti SC","STSong","SimSun",serif;
+--font-sans:"Noto Serif SC","Source Han Serif SC","Source Han Serif CN","Noto Serif CJK SC","Songti SC","STSong","SimSun",serif;
 --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
 --bg:var(--surface);--fg:var(--ink);--mut:var(--ink-muted);--card:var(--surface-raised);--acc:var(--ai);--warn:var(--shu)}
 @media(prefers-color-scheme:dark){:root{
@@ -42,7 +38,7 @@ TOKENS_CSS = FONT_FACE + """:root{
 # 基础排版与组件：方正、细线、不用投影；.card 退化为“一条发丝线 + 内容”，不再是一个个盒子（对应“卡片太多”的反馈）
 BASE_CSS = TOKENS_CSS + """
 *{box-sizing:border-box}
-body{background:var(--surface);color:var(--ink);font:15px/26px var(--font-sans);font-feature-settings:'tnum' 1,'cv11' 1;margin:0;-webkit-font-smoothing:antialiased}
+body{background:var(--surface);color:var(--ink);font:15px/26px var(--font-sans);font-feature-settings:'tnum' 1;margin:0;-webkit-font-smoothing:antialiased}
 main{max-width:720px;margin:0 auto;padding:var(--space-6) var(--space-4) var(--space-12)}
 h1{font:600 26px/36px var(--font-display);letter-spacing:.04em;margin:0 0 var(--space-1)}
 h2{font:700 18px/28px var(--font-sans);margin:var(--space-8) 0 var(--space-2)}

@@ -44,8 +44,6 @@ def build_store(full: bool = False):
 
 
 def main() -> None:
-    from .theme import copy_font
-    copy_font(pathlib.Path(__file__).parent / "demo")
     w, prep, settle = build()
     for name, steps, lib in (("flow_prep", prep, ""), ("flow_settle", settle, "step5.html")):
         (DIR / f"{name}.html").write_text(render_flow(steps, rd=Redactor(w, "code"), library_href=lib), encoding="utf-8")

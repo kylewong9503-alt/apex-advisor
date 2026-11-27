@@ -11,7 +11,7 @@ from .graph import build_matter_graph, render_graph_browser
 from .panels import calibration_panel, render_calibration
 from .privacy import NO_CAPTURE_META, PRINT_GUARD_CSS, Redactor
 from .profile import build_profile, render_html as render_profile
-from .theme import BRAND, mark_data_uri, mark_svg, wave_band
+from .theme import BRAND, FONT_LINK, mark_data_uri, mark_svg, wave_band
 from .workbench import CSS, matter_body, workbench_view
 
 E = html.escape
@@ -98,7 +98,7 @@ def render_app(w, store=None, *, mode: str = "code", prep=None, conversations: O
     href = "?mask=off" if masked else toggle_href
     toggle = (f"<a href='{E(href)}'>{'取消遮挡' if masked else '一键遮挡'}</a>" if (toggle_href or masked) else "")
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>{E(title)}</title><meta name='privacy-capture' content='graph'><link rel='icon' href='{mark_data_uri()}'><style>{CSS}{SHELL_CSS}{PRINT_GUARD_CSS}</style></head><body>"
+            f"<title>{E(title)}</title><meta name='privacy-capture' content='graph'><link rel='icon' href='{mark_data_uri()}'>{FONT_LINK}<style>{CSS}{SHELL_CSS}{PRINT_GUARD_CSS}</style></head><body>"
             f"<div class='app'><aside><span class='brand'>{mark_svg(24)}{BRAND}</span><h4>导航</h4>{left}<h4>最近对话</h4>{side_convs}"
             f"<h4>校准</h4><a href='#/calibration' data-nav='calibration'>校准面板</a></aside>"
             f"<div class='content'><div class='top'><span class='mut'>显示：{'已遮挡' if masked else ('代号' if mode == 'code' else '姓名')}</span>"

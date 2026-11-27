@@ -11,7 +11,7 @@ from typing import Optional
 from .graph import build_matter_graph, render_svg
 from .judgment import judgment_card
 from .settle_flow import SettlementSession
-from .theme import BASE_CSS, wave_band
+from .theme import BASE_CSS, FONT_LINK, wave_band
 from .world import World
 
 E = html.escape
@@ -20,7 +20,7 @@ CSS = BASE_CSS
 
 def page(body: str, title: str = "Kagami") -> str:
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>{E(title)}</title><style>{CSS}</style></head><body><main>{wave_band()}{body}</main></body></html>")
+            f"<title>{E(title)}</title>{FONT_LINK}<style>{CSS}</style></head><body><main>{wave_band()}{body}</main></body></html>")
 
 
 def render_settlement_page(screen: dict) -> str:

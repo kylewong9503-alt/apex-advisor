@@ -30,13 +30,13 @@ from . import scenes as SC
 from .world import SELF as SELF_ID
 from .privacy import AppLock, Locked, Redactor, TooManyAttempts
 from .shell import render_app
-from .theme import BRAND, mark_svg
+from .theme import BRAND, FONT_LINK, mark_svg
 
 ICON = mark_svg()
 from .workbench import workbench_view
 
 E = html.escape
-CSP = ("default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; connect-src 'self'; script-src 'unsafe-inline'; img-src 'self' data:; "
+CSP = ("default-src 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; script-src 'unsafe-inline'; img-src 'self' data:; "
        "manifest-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 MANIFEST = ('{"name":"Kagami","short_name":"Kagami","start_url":"/","display":"standalone","background_color":"#f4f1e9",'
             '"theme_color":"#1f3b61","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}')
@@ -69,7 +69,7 @@ def kind_label(proposed: dict) -> str:
 def _page(body: str, title: str = BRAND) -> str:
     from .flow import FLOW_CSS
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>"
-            f"<title>{E(title)}</title><meta name='privacy-capture' content='deny'>{HEAD_EXTRA}<style>{FLOW_CSS}"
+            f"<title>{E(title)}</title><meta name='privacy-capture' content='deny'>{FONT_LINK}{HEAD_EXTRA}<style>{FLOW_CSS}"
             f".gate{{max-width:420px;margin:0 auto;padding:96px 24px;display:flex;flex-direction:column;gap:24px;height:auto}}"
             f"input{{font:inherit;font-size:20px;padding:14px 16px;border:1px solid var(--line-strong);border-radius:2px;background:var(--surface-raised);color:var(--ink);width:100%}}"
             f"</style></head><body>{body}</body></html>")
@@ -766,11 +766,19 @@ def make_handler(app: App):
                 return self._send(200, "ok", "text/plain")
             if path == "/manifest.webmanifest":
                 return self._send(200, MANIFEST, "application/manifest+json")
-            if path == "/inter.woff2":  # 字体文件不含任何人物信息：可缓存，解锁前也可取
-                from .theme import FONT_FILE
-                b = FONT_FILE.read_bytes()
+            if path == "/fonts.css" or path.startswith("/fonts/"):  # 字体不含任何人物信息：可缓存，解锁前也可取
+                import re as _re
+                from .theme import FONTS_CSS_FILE, FONTS_DIR
+                if path == "/fonts.css":
+                    b, ct = FONTS_CSS_FILE.read_bytes(), "text/css; charset=utf-8"
+                else:
+                    name = path[len("/fonts/"):]
+                    f = FONTS_DIR / name
+                    if not _re.fullmatch(r"noto-serif-sc-(\d+|latin|latin-ext)-wght-normal\.woff2", name) or not f.is_file():
+                        return self._send(404, "not found", "text/plain")
+                    b, ct = f.read_bytes(), "font/woff2"
                 self.send_response(200)
-                for k, val in (("Content-Type", "font/woff2"), ("Content-Length", str(len(b))), ("Cache-Control", "public, max-age=86400"),
+                for k, val in (("Content-Type", ct), ("Content-Length", str(len(b))), ("Cache-Control", "public, max-age=86400"),
                                ("X-Content-Type-Options", "nosniff"), ("Content-Security-Policy", CSP)):
                     self.send_header(k, val)
                 self.end_headers()
