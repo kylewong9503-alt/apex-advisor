@@ -197,6 +197,16 @@ def test_settlement_end_to_end_over_http(tmp_path):
         assert "这次结果算哪一种" in body
         cats = list(s.app.sess._behavior_for()[0].categories)
         assert req(s, "POST", "/settle/outcome", f"choice={cats.index('专家需求')}", headers=ck)[0] == 303
+        from people_reading.skillset import labels
+        n_labels = len(labels(s.app.lock.store))
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "记下这一条吗" in body  # 报告里的草稿先由你确认：打开页面不会替你确认
+        rep = s.app.sess.report_drafts
+        assert rep and all(d["status"] == "pending" for d in s.app.lock.store.drafts() if d["id"] in rep)
+        assert len(labels(s.app.lock.store)) == n_labels  # 没确认就没有回测标签
+        for did in rep:
+            assert req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)[0] == 303
+        assert len(labels(s.app.lock.store)) == n_labels + len(rep)
         body = req(s, "GET", "/", headers=ck)[2]
         assert "4×" in body and "结果" in body
         assert s.app.w.engine.preds["P-1"].st.status == "settled"

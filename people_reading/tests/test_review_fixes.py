@@ -108,10 +108,19 @@ def test_f3_unrelated_contemporaneous_record_does_not_make_a_late_report_countab
     assert next(r for k, r in w.engine.rows.items() if k[2:] == ("H1", "H2")).status == "recall_only"
 
 
+def _as_confirmed_record(st, o, behavior_key):
+    """模拟这条观察是经草稿确认而来的（应用里只有这一条路），并带着它所记录的行为。"""
+    st.new_conversation(f"cx-{o.id}", "t") if f"cx-{o.id}" not in [c for c, _, _ in st.conversations()] else None
+    mid = st.add_message(f"cx-{o.id}", "user", o.content)
+    st.save_draft(f"D9{len(st.drafts()) + 100}", mid, [{"message_id": mid, "start": 0, "end": len(o.content)}],
+                  {"behavior_key": behavior_key}, "confirmed", o.id)
+
+
 def test_f3_explicitly_cited_contemporaneous_observation_makes_the_outcome_countable(tmp_path):
     w, st, it, sess = T.shortcut(tmp_path, [T.report_out(), T.proposal()])
     o = w.add_observation("MTG-F-1", ("当天记：他先问专家要解决什么问题",), "behavior", SELF, "F", "当天记：他先问专家要解决什么问题",
                           source_mode="contemporaneous")
+    _as_confirmed_record(st, o, "first_q_topic")  # 第 4 轮：依据必须是关于这个行为的记录
     sess.submit_report("c1", T.REPORT, hours_since_event=72)
     sess.answer_premise(T.Q_PREMISE, "都没有")
     sess.confirm_outcome(supported_by=(o.id,))  # 你明确指出：这条当时的记录就是结果的依据
@@ -538,6 +547,7 @@ def test_h2_supported_by_must_belong_to_this_interaction_and_enters_source_spans
     assert ("MTG-F-1", "first_q_topic", 1) not in w.engine.outcomes  # 失败时什么也没写
     mine = w.add_observation("MTG-F-1", ("当天记：他先问专家要解决什么问题",), "behavior", SELF, "F", "当天记：他先问专家要解决什么问题",
                              source_mode="contemporaneous")
+    _as_confirmed_record(st, mine, "first_q_topic")
     sess.confirm_outcome(supported_by=(mine.id,))
     rec = w.engine.outcomes[("MTG-F-1", "first_q_topic", 1)]
     assert rec.recalled_only is False and "当天记：他先问专家要解决什么问题" in rec.source_spans  # 证据链里有它
@@ -606,3 +616,148 @@ def test_h5_each_premise_gets_its_own_anchor_occurrence(tmp_path):
     qs = {q["anchor_event"]: q["question"] for q in sess.premise_questions()}
     assert qs["首次提问"] == "到散会前，你展示过材料吗？"  # 首问没发生 → 按截止点问
     assert qs["首次表决"] == "在首次表决之前，你展示过材料吗？"  # 表决发生了 → 照常问
+
+
+# ───────── 第 4 轮复审（f0404d8）─────────
+def test_r4_advice_checks_numbers_in_settlement_criterion(tmp_path):
+    from people_reading import skillset as K
+    from people_reading.llm import ScriptedModel
+    from people_reading.tests.test_skillset import mk, TEXT
+    from people_reading.tests.test_step2 import D_BEH, extraction
+    st, it = mk(tmp_path, [extraction(drafts=[D_BEH])])
+    oid = it.confirm(it.handle("c1", TEXT).draft_ids[0])
+    h = it.world.add_hypothesis("X", "只对跨部门提案追问")
+    item = {"do": "写明负责人", "reason": "他在会上追问负责人", "cites": [oid], "depends_on": h.id, "fails_if": "仍追问",
+            "prediction": {"text": "不再追问", "settlement_criterion": "负责人被问了 731 次"}}
+    assert K.advise(ScriptedModel([{"items": [item]}]), it.world, "X", st) is None
+
+
+def test_r4_split_keeps_one_message_on_one_side():
+    from people_reading.skillset import split
+    lbls = [{"id": f"L{i}", "message_id": 1} for i in range(5)] + [{"id": f"M{i}", "message_id": m} for i, m in enumerate((2, 3, 4, 5))]
+    train, test = split(lbls)
+    assert not ({x["message_id"] for x in train} & {x["message_id"] for x in test})
+    assert test and all(x["message_id"] == 5 for x in test)
+
+
+def test_r4_seven_options_render():
+    from people_reading.flow import ask, render_flow
+    page = render_flow([ask("q", [(str(i), "", "") for i in range(7)])])
+    assert page.count("role='radio'") == 7
+
+
+def test_r4_prep_caps_judgment_options():
+    from people_reading.flow import build_prep_steps
+    card = lambda s: {"header": {"statement": s}}  # noqa: E731
+    v = {"title": "t", "my_judgments": [card(f"判断{i}") for i in range(6)], "model_alternatives": [card("另一种")]}
+    assert len(build_prep_steps(v)[0]["options"]) <= 6
+
+
+def _cfo_server(tmp_path, outputs):
+    import threading
+    from people_reading.llm import ScriptedModel
+    from people_reading.server import serve
+    from people_reading.tests import test_step4 as T4
+    w, st, it, pm, mid, iid = T4.c2(tmp_path)
+    path = st.path; st.close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel(outputs))
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    return s, mid
+
+
+def test_r4_no_settle_button_without_locked_prediction_and_masked_page_has_no_ids(tmp_path):
+    from people_reading.tests import test_step4 as T4
+    from people_reading.tests.test_server import login, req
+    s, mid = _cfo_server(tmp_path, [T4.PREP_OUT])
+    try:
+        ck = login(s)
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "/settle/start" not in body  # 没有锁定的预测：不出现“会后”
+        assert req(s, "POST", "/settle/start", headers=ck)[0] == 409
+        req(s, "POST", "/mask", headers=ck)
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "matter" not in body and mid not in body.split("<script>")[0].replace("data-fields='{}'", "")
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_r4_idle_timeout_drops_wizard_state(tmp_path):
+    from people_reading.server import App
+    from people_reading.store import Store
+    from people_reading.tests.test_step2 import PASS
+    path = str(tmp_path / "t.db"); Store(path, PASS).close()
+    now = [0.0]
+    app = App(path, idle_seconds=10, clock=lambda: now[0])
+    app.lock.unlock(PASS); app.on_unlock(); app.token = "t"
+    app.lk = {"mid": "gone", "hyp": {}}
+    now[0] = 100.0
+    assert app.authed("t") is False and app.lk is None
+    app.lock.unlock(PASS); app.on_unlock()
+    assert "<h1>" in app.flow_html()  # 重新登录后能正常打开，不卡在旧向导
+
+
+def test_r4_same_meeting_unrelated_record_cannot_make_recall_countable(tmp_path):
+    w, st, it, sess = T.shortcut(tmp_path, [T.report_out(), T.proposal()])
+    sign = w.add_observation("MTG-F-1", ("签到",), "behavior", SELF, "F", "F 九点签到", source_mode="contemporaneous")
+    _as_confirmed_record(st, sign, None)  # 同一场会、当时记录，但与被预测的行为无关
+    sess.submit_report("c1", T.REPORT, hours_since_event=72)
+    sess.answer_premise(T.Q_PREMISE, "都没有")
+    with pytest.raises(EngineError):
+        sess.confirm_outcome(supported_by=(sign.id,))
+    assert ("MTG-F-1", "first_q_topic", 1) not in w.engine.outcomes  # 什么也没写
+
+
+def test_r4_settlement_precheck_prevents_partial_write(tmp_path):
+    w, st, it, sess = T.shortcut(tmp_path, [T.report_out(), T.proposal()])
+    sess.submit_report("c1", T.REPORT)
+    # 不回答前提就确认结果：应在写入结果之前就失败
+    with pytest.raises(EngineError):
+        sess.confirm_outcome()
+    assert ("MTG-F-1", "first_q_topic", 1) not in w.engine.outcomes
+    assert all(p.st.status == "locked" for p in w.engine.preds.values())
+
+
+def test_r4_correction_with_tampered_rules_writes_nothing():
+    from types import MappingProxyType
+    e, ra, rb = locked_engine()
+    e.confirm_outcome("O", "ask_owner", 1, False)
+    e.settle_prediction("P", {})
+    pv = e.correction_preview("O", "cross_dept", False)
+    p = e.preds["P"]
+    fr = dict(p.frozen_rules)
+    fr["RA"] = make_rule("RA", "RA", "ask_owner", {"kind": "const_binary", "p": 0.01})
+    p.frozen_rules = MappingProxyType(fr)  # 预览之后被篡改
+    facts, nrev = dict(e.opps["O"].facts), len(e.revisions)
+    with pytest.raises(EngineError):
+        e.apply_correction("O", "cross_dept", False, confirmed_by_user=True, preview_token=pv["token"])
+    assert e.opps["O"].facts == facts and len(e.revisions) == nrev and not e.opps["O"].corrected
+
+
+def test_r4_legacy_db_with_rule_redefined_after_lock_settles_with_locked_rule():
+    e, ra, rb = locked_engine()
+    d = e.to_dict()
+    pd = d["preds"][0]
+    pd.pop("frozen")  # 旧库没有冻结表
+    legacy = [[r[0], r[1]] for r in pd["pre"]["rule_defs"]]
+    pd["pre"]["rule_defs"] = legacy
+    pre = pd["pre"]
+    content = dict(
+        id=pre["id"], person_id=pre["person_id"], matter_id=pre["matter_id"], behavior_key=pre["behavior_key"],
+        def_version=pre["def_version"], outcome_type=pre["outcome_type"], frozen_categories=pre["frozen_categories"],
+        settlement_criterion=pre["settlement_criterion"], bind_mode=pre["bind_mode"],
+        bound_opportunity_id=pre["bound_opportunity_id"], conditions=tuple(tuple(c) for c in pre["conditions"]),
+        premises=tuple(), prob=pre["prob"], prob_dist=pre["prob_dist"], baseline_prob=pre["baseline_prob"],
+        baseline_dist=pre["baseline_dist"], baseline_note=pre["baseline_note"], threshold=pre["threshold"],
+        window=pre["window"], rule_defs=tuple(tuple(r) for r in legacy))
+    pre["content_hash"] = hashlib.sha256(_canon(content).encode()).hexdigest()
+    # 旧版允许锁定后重定义规则：库里存的是改过的规则
+    for r in d["rules"]:
+        if r["id"] == "RA":
+            r["spec"] = {"kind": "const_binary", "p": 0.5}
+            r["definition"] = _canon(r["spec"])
+    e2 = Engine.from_dict(json.loads(json.dumps(d)))
+    assert e2.verify_hash("P")
+    assert e2.preds["P"].frozen_rules["RA"].definition == legacy[[x[0] for x in legacy].index("RA")][1]  # 用的是锁定时的规则
+    e2.confirm_outcome("O", "ask_owner", 1, False)
+    e2.settle_prediction("P", {})
+    assert e2.rows[("O", "ask_owner", "RA", "RB")].status == "counted"

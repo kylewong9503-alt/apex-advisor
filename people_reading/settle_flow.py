@@ -252,6 +252,10 @@ class SettlementSession:
     def confirm_outcome(self, outcome=None, *, unobservable: bool = False, supported_by: tuple = ()) -> dict:
         """supported_by：你明确指出“这几条已确认的观察就是结果的依据”。全部是当时记录时，结果不算仅回忆。"""
         beh, _ = self._behavior_for()
+        # 写入任何东西之前，先确认每份预测都能结算（哈希、前提都齐）：避免结果已写入而部分预测失败
+        for p in self.matched():
+            self.eng.check_settle(p.id, {pr.id: None for pr in p.pre.premises if (p.id, pr.id) in self.answers},
+                                  opp_id=self.iid, need_outcome=False)
         if self.eng.needs_outcome_confirmation(self.iid, beh.key, beh.version):
             # R10：结果是否“仅由回忆材料支撑”，看结果的依据。默认依据就是这份首份报告：事件后超过 48 小时才报告
             # = 回忆（2.5）。同一场会里别的当时记录（比如只记了签到）与这个结果无关，不能让它变成可计入；
@@ -262,6 +266,10 @@ class SettlementSession:
                 raise EngineError("supported_by 里有不存在的观察")
             if any(o.interaction_id != self.iid for o in cited):
                 raise EngineError("supported_by 只能指本场会谈的观察；别的会议的记录不能充当这个结果的依据")
+            # 还必须是关于这个行为的记录：同一场会里无关的当时记录（比如签到）不能让事后回忆变成可计入
+            bk_of = {d["confirmed_ref"]: d["proposed"].get("behavior_key") for d in self.intake.store.drafts() if d.get("confirmed_ref")}
+            if any(bk_of.get(o.id) != beh.key for o in cited):
+                raise EngineError(f"supported_by 只能指关于“{beh.key}”这个行为的观察")
             has_contemporaneous = bool(cited) and all(o.source_mode == "contemporaneous" for o in cited)
             recalled_only = self.report_mode == "recalled" and not has_contemporaneous
             spans = (self.proposal["span"],) if self.proposal and self.proposal.get("span") else \
@@ -286,10 +294,11 @@ class SettlementSession:
         return result
 
     # —— 7. 复盘 ——
-    def review(self, model=None, *, confirm_intervention: Optional[str] = None) -> dict:
-        """确认首份报告的草稿，生成三行判断卡，并处理干预结果、议题角色证据、watch 与后续预测建议。"""
+    def review(self, model=None, *, confirm_intervention: Optional[str] = None, confirm_drafts: bool = True) -> dict:
+        """生成三行判断卡，并处理干预结果、议题角色证据、watch 与后续预测建议。
+        confirm_drafts=False：首份报告的草稿要由用户逐条确认（应用里如此），这里不替用户确认，也就不产生回测标签。"""
         confirmed = [self.intake.confirm(d) for d in self.report_drafts
-                     if next(x for x in self.intake.store.drafts() if x["id"] == d)["status"] == "pending"]
+                     if next(x for x in self.intake.store.drafts() if x["id"] == d)["status"] == "pending"] if confirm_drafts else []
         itv = next((i for i in self.w.interventions.values() if i.interaction_id == self.iid), None)
         rev = {"confirmed_observations": confirmed, "cards": [], "role_update": None, "alt_role": None,
                "watch": None, "suggested_prediction": None, "intervention": None}

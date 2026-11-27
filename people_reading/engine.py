@@ -137,6 +137,27 @@ def make_rule(id: str, name: str, behavior_key: str, spec: dict, definition: str
     return Rule(id, name, behavior_key, ot, definition or _canon(spec), _fn_from_spec(spec), spec)
 
 
+def _legacy_frozen(e: "Engine", p: "Prediction") -> dict:
+    """旧库没有冻结表：按锁定时记下的定义重建规则。声明式规则的默认定义就是规格的规范 JSON，
+    所以即使锁定后规则被重定义过，也能还原锁定时的规则；还原不了的沿用当前规则，由 verify_hash 拒绝不一致的结算。"""
+    out = {}
+    defs = {entry[0]: entry[1] for entry in p.pre.rule_defs}
+    for rid in p.rule_snaps:
+        cur = e.rules.get(rid)
+        d = defs.get(rid)
+        if cur is not None and d is not None and cur.definition != d:
+            try:
+                spec = json.loads(d)
+                if isinstance(spec, dict) and "kind" in spec:
+                    out[rid] = make_rule(rid, cur.name, cur.behavior_key, spec, d)
+                    continue
+            except (ValueError, EngineError, KeyError, TypeError):
+                pass
+        if cur is not None:
+            out[rid] = cur
+    return out
+
+
 def _freeze_rule(r: "Rule") -> "Rule":
     """锁定时冻结一份规则：声明式规则深拷贝后重建；只有函数的规则（测试用）无法拷贝，原样保留。"""
     if r.spec is None:
@@ -529,11 +550,10 @@ class Engine:
         return rec
 
     # —— 结算（R5 幂等、R11 各自核对） ——
-    def settle_prediction(self, pid: str, premise_answers: dict, opp_id: Optional[str] = None) -> Prediction:
-        """premise_answers: {premise_id: (holds|violated|unclear, 依据原话)}。"""
+    def check_settle(self, pid: str, premise_answers: dict, opp_id: Optional[str] = None, *, need_outcome: bool = True) -> str:
+        """只校验、不写入：结算会失败的情况都在这里先报出来。调用方可以在写任何东西（包括结果）之前先查一遍，
+        避免“结果已写入、一半预测已结算、另一半失败”的部分写入。返回实际要用的机会 id。"""
         p = self.preds[pid]
-        if p.st.status != "locked":
-            return p  # R5：重复结算不改变任何计数
         if not self.verify_hash(pid):
             raise EngineError(f"预测 {pid} 的冻结内容与锁定时的哈希不一致，拒绝结算")
         pre = p.pre
@@ -544,13 +564,24 @@ class Engine:
         if pre.bind_mode == "condition_match":
             if any(not _same(opp.facts.get(k), v) for k, v in pre.conditions):
                 raise EngineError("该机会不满足预测的情境条件")
-        rec = self.outcomes.get((opp_id, pre.behavior_key, pre.def_version))
-        if rec is None:
+        if need_outcome and (opp_id, pre.behavior_key, pre.def_version) not in self.outcomes:
             raise OutcomeMissing("先确认该机会的实际结果")
-        check = {}
         for pr in pre.premises:
             if pr.id not in premise_answers:
                 raise PremiseNotAsked(f"前提「{pr.text}」尚未核对")
+        return opp_id
+
+    def settle_prediction(self, pid: str, premise_answers: dict, opp_id: Optional[str] = None) -> Prediction:
+        """premise_answers: {premise_id: (holds|violated|unclear, 依据原话)}。"""
+        p = self.preds[pid]
+        if p.st.status != "locked":
+            return p  # R5：重复结算不改变任何计数
+        opp_id = self.check_settle(pid, premise_answers, opp_id)
+        pre = p.pre
+        opp = self.opps[opp_id]
+        rec = self.outcomes[(opp_id, pre.behavior_key, pre.def_version)]
+        check = {}
+        for pr in pre.premises:
             status, quote = premise_answers[pr.id]
             check[pr.id] = {"text": pr.text, "status": status, "quote": quote}
         end = None
@@ -725,8 +756,9 @@ class Engine:
             raise UnconfirmedCorrection("事实更正必须先调用 correction_preview，并带上它返回的 token")
         if preview_token != self._preview_token(opp_id, field_name, value):
             raise UnconfirmedCorrection("预览与这次更正不一致，或预览之后数据已变化；请重新预览")
-        self._previews.discard(preview_token)  # 一次性
         o = self.opps[opp_id]
+        self._compute_rows(opp_id, {**o.facts, field_name: value}, True)  # 先算一遍（含冻结规则完整性校验）：失败就什么都不写
+        self._previews.discard(preview_token)  # 一次性
         before = o.facts.get(field_name)
         rev = self._log("fact_correction", f"{opp_id}.{field_name}", {"before": before, "after": value},
                         reason or f"用户更正 {field_name}", spans=source_spans)
@@ -859,7 +891,7 @@ class Engine:
             p = Prediction(PreContent(**x), Settlement(**pd["st"]),
                            {k: RuleSnap(**v) for k, v in pd["snaps"].items()})
             p.frozen_rules = MappingProxyType({k: make_rule(k, f["name"], f["behavior_key"], f["spec"], f["definition"])
-                                               for k, f in pd.get("frozen", {}).items()} or {k: e.rules[k] for k in p.rule_snaps})
+                                               for k, f in pd.get("frozen", {}).items()} or _legacy_frozen(e, p))
             e.preds[p.id] = p
         for o in d["outcomes"]:
             o["source_spans"] = tuple(o["source_spans"])

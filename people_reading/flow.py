@@ -21,7 +21,8 @@ from .theme import TOKENS_CSS
 
 E = html.escape
 MARKS = {"you": "mk-you", "model": "mk-model", "rec": "mk-rec", "": ""}
-KEYS = "ABCDEF"
+KEYS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+MAX_JUDGMENTS = 5  # 会前“他最可能先问什么”最多列 5 条看法 + “说不准”
 
 
 # ───────────────────────── 步骤构造 ─────────────────────────
@@ -40,8 +41,8 @@ def build_prep_steps(v: dict) -> list:
     mine, model = v.get("my_judgments", []), v.get("model_alternatives", [])
     cue = v.get("title", "")
     if mine or model:
-        opts = [(c["header"]["statement"], "you", "你的判断") for c in mine] + \
-               [(c["header"]["statement"], "model", "另一种可能") for c in model] + [("说不准", "", "")]
+        opts = ([(c["header"]["statement"], "you", "你的判断") for c in mine] +
+                [(c["header"]["statement"], "model", "另一种可能") for c in model])[:MAX_JUDGMENTS] + [("说不准", "", "")]
         steps.append(ask("他最可能先问什么？", opts, cue=cue, selected=0))
     f = v.get("fork")
     if f:
@@ -224,7 +225,7 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识
         if s["kind"] == "ask":
             os_ = "".join(
                 f"<button type='button' class='opt' role='radio' aria-checked='{'true' if k == s['selected'] else 'false'}'>"
-                f"<span class='k' aria-hidden='true'>{KEYS[k]}</span><span>"
+                f"<span class='k' aria-hidden='true'>{KEYS[k] if k < len(KEYS) else k + 1}</span><span>"
                 + (f"<i class='{MARKS[o['mark']]}' aria-hidden='true'></i>" if o["mark"] else "") + f"{e(o['text'])}"
                 + (f"<small>{e(o['sub'])}</small>" if o["sub"] else "") + "</span></button>" for k, o in enumerate(s["options"]))
             core = f"{cue}<h1>{e(s['q'])}</h1><div class='opts' role='radiogroup' aria-label='选项'>{os_}</div>"

@@ -241,10 +241,13 @@ def errors(lbls: list) -> list:
 
 
 def split(lbls: list, holdout: float = 0.2) -> tuple:
-    """按时间（message_id）排序，最近 holdout 比例只用来验收，不参与改进。"""
+    """按原话（message_id）整组切分：同一条原话的标签只落在一边，验收集检验的是没见过的发言。
+    按时间排序，最近约 holdout 比例的原话只用来验收，不参与改进。"""
+    mids = sorted({x["message_id"] for x in lbls})
+    k = int(round(len(mids) * (1 - holdout)))
+    test_m = set(mids[k:])
     s = sorted(lbls, key=lambda x: (x["message_id"], x["id"]))
-    k = int(round(len(s) * (1 - holdout)))
-    return s[:k], s[k:]
+    return [x for x in s if x["message_id"] not in test_m], [x for x in s if x["message_id"] in test_m]
 
 
 def replay(store, model, lbls: list, world: Optional[World] = None) -> list:
@@ -394,7 +397,8 @@ def advise(model, w: World, person_id: str, store=None) -> Optional[dict]:
     hids = {h["id"] for h in pk["hypotheses"]}
     keep, dropped = [], 0
     for x in d["items"]:
-        texts = " ".join([x["do"], x["reason"], x["fails_if"], (x.get("prediction") or {}).get("text", "")])
+        pred = x.get("prediction") or {}
+        texts = " ".join([x["do"], x["reason"], x["fails_if"], pred.get("text", ""), pred.get("settlement_criterion", "")])
         ok = (x["cites"] and all(c in oids for c in x["cites"])  # 只能引用你确认过的观察，不能引用模型自己写的东西
               and x["depends_on"] in hids and numbers_ok(texts, pk) and _clean(texts)
               and not any(o in texts for o in OVERCLAIMS) and "针对你" not in texts)

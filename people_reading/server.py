@@ -83,13 +83,15 @@ class App:
 
     def authed(self, cookie: str) -> bool:
         with self.mutex:
-            if self.lock.locked:  # 空闲超时 → 会话失效
+            if self.lock.locked:  # 空闲超时 → 会话失效，内存里的进度一并清掉
                 self.token = None
+                self.on_lock()
                 return False
             return bool(self.token) and secrets.compare_digest(cookie or "", self.token)
 
     # —— 解锁后载入世界；上锁后丢弃 ——
     def on_unlock(self) -> None:
+        self.on_lock()  # 上一次会话（含空闲超时自动上锁）留下的向导与会话一律作废
         store = self.lock.store
         self.w, _ = store.load_world()
         self.intake = Intake(store, self.w, self.model)
@@ -149,10 +151,10 @@ class App:
             v = workbench_view(w, mid, store, prep=pm.prep if pm else None)
             steps = build_prep_steps(v)
             if pm and steps and steps[-1]["kind"] == "answer":
-                lockb = [{"label": "锁定预测", "act": {"url": "/lock/start", "fields": {"matter": mid}, "reload": True}}] \
+                lockb = [{"label": "锁定预测", "act": {"url": "/lock/start", "fields": {}, "reload": True}}] \
                     if pm.prep.category_draft is not None else []
-                steps[-1]["buttons"] = [{"label": "记为行动", "act": {"url": "/act", "fields": {"matter": mid}}}] + lockb + \
-                    [{"label": "会后", "act": {"url": "/settle/start", "fields": {"matter": mid}, "reload": True}}]
+                steps[-1]["buttons"] = [{"label": "记为行动", "act": {"url": "/act", "fields": {}}}] + lockb + \
+                    ([{"label": "会后", "act": {"url": "/settle/start", "fields": {}, "reload": True}}] if self._settleable() else [])
         steps = steps or [open_ask("今天想记一件什么事？", cue="直接说，不用先选人或填表", act={"url": "/say", "fields": {}})]
         return render_flow(steps, rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner())
 
@@ -161,6 +163,20 @@ class App:
         return render_app(self._world(), store, mode="masked" if self.masked else "code", toggle_href="")
 
     # —— 会后结算：每一步都是服务端状态机的下一步；首份报告之前不出现任何候选答案 ——
+    def current_mid(self) -> str:
+        w = self._world()
+        return list(w.matters)[-1] if w.matters else ""
+
+    def _settleable(self) -> bool:
+        """只有计划会谈上有锁定的预测，才出现“会后”：否则报告无法结算。"""
+        got = self._planned()
+        if got is None or got[0] not in self._world().engine.opps:
+            return False
+        try:
+            return bool(SettlementSession(self.intake, self.current_mid(), got[0], None).matched())
+        except Exception:
+            return False
+
     def _planned(self):
         w = self._world()
         return next(((i, x) for i, x in reversed(list(w.interactions.items())) if x.get("status") == "planned" and x.get("with")), None)
@@ -184,7 +200,7 @@ class App:
             if left:
                 q = left[0]
                 return [ask(q["question"], [(o, "", "") for o in q["options"]], cue="先核对前提", selected=None,
-                            act={"url": "/settle/premise", "fields": {"pid": q["premise_id"]}})]
+                            act={"url": "/settle/premise", "fields": {}})]  # 服务端总是回答第一个未答前提：页面上不带任何标识
             prop = s.propose_outcome()
             if prop.get("reused"):
                 s.confirm_outcome()
@@ -196,8 +212,12 @@ class App:
                 return [ask("这次结果算哪一种？", [(str(c), "", "") for c in cats] + [("无法判断", "", "")],
                             cue=f"依据：{basis}" if basis else "", selected=sel, act={"url": "/settle/outcome", "fields": {}})]
         if s.state == "settled":
+            pending = {d["id"] for d in self.lock.store.drafts(status="pending")}
+            mine = [x for x in self.pending_steps() if x["act"]["fields"]["id"] in pending and x["act"]["fields"]["id"] in s.report_drafts]
+            if mine:
+                return mine  # 报告里的草稿先由你逐条确认，系统不替你确认
             if self.sess_review is None:
-                self.sess_review = s.review(self.model)
+                self.sess_review = s.review(self.model, confirm_drafts=False)
             cards = self.sess_review["cards"][:1]
             if cards:
                 scr = {"open_question": "", "matter": "", "meeting_time": ""}
@@ -213,7 +233,7 @@ class App:
 
     def settle_start(self, mid: str) -> None:
         got = self._planned()
-        if got is None or mid not in self._world().matters:
+        if got is None or mid not in self._world().matters or not self._settleable():
             raise KeyError(mid)
         iid, x = got
         self.sess = SettlementSession(self.intake, mid, iid, self.model, x.get("label", ""))
@@ -229,10 +249,10 @@ class App:
             raise KeyError("report")
         self.sess.submit_report(self.CID, text.strip(), hours_since_event=self.sess_hours)
 
-    def settle_premise(self, pid: str, choice: str) -> None:
+    def settle_premise(self, choice: str) -> None:
         if self.sess is None or self.sess.state != "premise_check":
             raise KeyError("premise")
-        q = next((x for x in self._open_premises() if x["premise_id"] == pid), None)
+        q = next(iter(self._open_premises()), None)
         if q is None or not choice.isdigit() or int(choice) >= len(q["options"]):
             raise KeyError("premise")
         self.sess.answer_premise(q["premise_text"], q["options"][int(choice)], cutoff=q["cutoff"], anchor_event=q["anchor_event"])
@@ -496,11 +516,11 @@ def make_handler(app: App):
                     elif path == "/confirm":
                         app.confirm((form.get("id") or [""])[0], (form.get("choice") or ["1"])[0])
                     elif path == "/act":
-                        app.act((form.get("matter") or [""])[0])
+                        app.act(app.current_mid())
                     elif path == "/settle/start":
-                        app.settle_start((form.get("matter") or [""])[0])
+                        app.settle_start(app.current_mid())
                     elif path == "/lock/start":
-                        app.lock_start((form.get("matter") or [""])[0])
+                        app.lock_start(app.current_mid())
                     elif path == "/lock/next":
                         app.lock_next((form.get("k") or [""])[0], (form.get("choice") or [""])[0], (form.get("hid") or [""])[0])
                     elif path == "/lock/restart":
@@ -514,7 +534,7 @@ def make_handler(app: App):
                     elif path == "/settle/report":
                         app.settle_report((form.get("text") or [""])[0][:4000])
                     elif path == "/settle/premise":
-                        app.settle_premise((form.get("pid") or [""])[0], (form.get("choice") or [""])[0])
+                        app.settle_premise((form.get("choice") or [""])[0])
                     elif path == "/settle/outcome":
                         app.settle_outcome((form.get("choice") or [""])[0])
                     else:
