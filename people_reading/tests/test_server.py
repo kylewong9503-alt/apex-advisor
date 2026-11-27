@@ -398,3 +398,21 @@ def test_codespaces_host_only_inside_codespaces():
     from people_reading.server import codespaces_host
     assert codespaces_host({}) == "" and codespaces_host({"CODESPACE_NAME": "x"}) == ""
     assert codespaces_host({"CODESPACE_NAME": "fuzzy-fiesta-1", "GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN": "app.github.dev"}) == "fuzzy-fiesta-1-8765.app.github.dev"
+
+
+def test_model_failure_shows_a_notice_once_and_logs_only_the_reason(tmp_path, capfd):
+    s = _fresh(tmp_path, ["不是 JSON", "还是不是", "仍然不是"])
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote("很私密的原话内容"), headers=ck)
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "role='alert'" in body and "模型没能解析" in body
+        assert "role='alert'" not in req(s, "GET", "/", headers=ck)[2]  # 只出现一次
+        assert "很私密的原话内容" not in capfd.readouterr().err  # 日志里只有原因，没有原话
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_submit_button_shows_busy_state():
+    from people_reading.flow import FLOW_JS
+    assert "处理中…" in FLOW_JS and "aria-busy" in FLOW_JS

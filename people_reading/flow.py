@@ -177,6 +177,7 @@ textarea{width:100%;font:inherit;font-size:20px;line-height:1.7;padding:16px;bor
 :focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .bn{position:fixed;top:0;left:0;right:0;z-index:5;background:var(--kin-soft);color:var(--kin);font-size:12px;line-height:20px;text-align:center;padding:2px 8px}
 .srs{border-bottom:1px solid var(--line);max-width:620px}.sr{display:flex;gap:20px;padding:12px 0;border-top:1px solid var(--line);font-size:16px;line-height:1.6}.sr span:first-child{width:56px;flex:none;color:var(--ink-muted)}
+.nt{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:6;max-width:min(560px,92vw);background:var(--ink);color:var(--surface);padding:12px 18px;border-radius:var(--radius-md);font-size:14px;line-height:22px}
 .line{font:600 clamp(24px,3vw,44px)/1.45 var(--font-sans);margin:0 0 28px}
 .why{margin:0;font-size:17px;line-height:1.9;color:var(--ink-muted);max-width:560px}
 .big{font:600 clamp(56px,7vw,88px)/1 var(--font-sans);color:var(--ai);font-variant-numeric:tabular-nums}
@@ -196,9 +197,9 @@ document.addEventListener('click',function(e){var o=e.target.closest('.opt');
  if(o){[].forEach.call(o.parentNode.children,function(x){x.setAttribute('aria-checked',x===o?'true':'false')});var b=o.closest('.step').querySelector('[data-next]');b&&(b.disabled=false);return}
  var a=e.target.closest('[data-act]');
  if(a){e.preventDefault();var d=JSON.parse(a.dataset.fields||'{}'),st=a.closest('.step'),ch=st.querySelector('.opt[aria-checked=true]'),ta=st.querySelector('textarea');
-  if(ch)d.choice=[].indexOf.call(ch.parentNode.children,ch);var cks=st.querySelectorAll('.opt[role=checkbox]');if(cks.length)d.ids=[].filter.call(cks,function(x){return x.getAttribute('aria-checked')==='true'}).map(function(x){return x.dataset.id}).join(',');if(ta)d.text=ta.value;if(a.hasAttribute('data-once')&&a.disabled)return;a.disabled=true;
+  if(ch)d.choice=[].indexOf.call(ch.parentNode.children,ch);var cks=st.querySelectorAll('.opt[role=checkbox]');if(cks.length)d.ids=[].filter.call(cks,function(x){return x.getAttribute('aria-checked')==='true'}).map(function(x){return x.dataset.id}).join(',');if(ta)d.text=ta.value;if(a.hasAttribute('data-once')&&a.disabled)return;a.disabled=true;a.dataset.t=a.textContent;a.textContent='处理中…';a.setAttribute('aria-busy','true');
   fetch(a.dataset.act,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(d)}).then(function(r){
-   if(!r.ok)throw 0;if(a.hasAttribute('data-once')){a.textContent='已记下'}else{location.href='/'}}).catch(function(){a.disabled=false;a.textContent='没成功，再试一次'});return}
+   if(!r.ok)throw 0;if(a.hasAttribute('data-once')){a.textContent='已记下'}else{location.href='/'}}).catch(function(){a.disabled=false;a.removeAttribute('aria-busy');a.textContent='没成功，再试一次'});return}
  if(e.target.closest('[data-next]')){e.preventDefault();next()}});
 document.addEventListener('keydown',function(e){var s=S[cur()-1];if(!s||e.target.tagName==='TEXTAREA')return;
  var k='ABCDEF'.indexOf(e.key.toUpperCase());var os=s.querySelectorAll('.opt');if(e.key.length===1&&k>=0&&os[k]){os[k].click();return}
@@ -208,7 +209,7 @@ document.addEventListener('keydown',function(e){var s=S[cur()-1];if(!s||e.target
 VARIANTS = [("classic", "l"), ("banded", "r"), ("dotted", "t"), ("ripple", "l"), ("tide", "r"), ("fade", "t")]
 
 
-def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAND, library_href: str = "", head_extra: str = "", banner: str = "", say_href: str = "") -> str:
+def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAND, library_href: str = "", head_extra: str = "", banner: str = "", say_href: str = "", notice: str = "") -> str:
     T = rd.t if rd is not None else (lambda x: x)
     e = lambda x: E(T(str(x)))  # noqa: E731  动态内容：遮挡时不输出原文
     masked = bool(rd is not None and rd.masked)
@@ -278,4 +279,4 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
     defs = f"<svg width='0' height='0' style='position:absolute' aria-hidden='true'><defs>{_scale_defs()}</defs></svg>"
     ttl = BRAND if masked else title
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>{E(ttl)}</title>{NO_CAPTURE_META}<link rel='icon' href='{mark_data_uri()}'>{head_extra}<style>{FLOW_CSS}{PRINT_GUARD_CSS}</style></head><body>{defs}{(f"<div class='bn' role='status'>{E(banner)}</div>" if banner else '')}{''.join(secs)}<script>{FLOW_JS}</script></body></html>")
+            f"<title>{E(ttl)}</title>{NO_CAPTURE_META}<link rel='icon' href='{mark_data_uri()}'>{head_extra}<style>{FLOW_CSS}{PRINT_GUARD_CSS}</style></head><body>{defs}{(f"<div class='bn' role='status'>{E(banner)}</div>" if banner else '')}{(f"<div class='nt' role='alert'>{E(notice)}</div>" if notice else '')}{''.join(secs)}<script>{FLOW_JS}</script></body></html>")

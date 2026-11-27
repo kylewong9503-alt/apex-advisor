@@ -50,6 +50,7 @@ class Intake:
         self.last_iid: dict[str, str] = {}  # 对话 → 最近一次涉及的互动
         self.focus: dict[str, str] = {}  # 对话 → 当前在聊的人物
         self._seq = 0
+        self.last_error = ""
 
     def adopt_world(self) -> None:
         """从已有 World 与库里保存的别名恢复人名索引（重新打开应用后调用）。
@@ -107,6 +108,8 @@ class Intake:
         try:
             data = self.model.structured(SYSTEM_EXTRACT, prompt, validate_extraction)
         except (ModelOutputInvalid, OSError) as e:
+            # 只记异常类型；远程调用的异常信息里只有状态码（见 llm.RemoteModelError），不含原话、密钥或响应体
+            self.last_error = f"{type(e).__name__}" + (f": {e}" if isinstance(e, OSError) else "")
             self.store.add_message(cid, "assistant", "模型暂时无法解析这条记录，原话已加密保存。可以手动填写。",
                                    "fallback", now=self.clock())
             return Reply("原话已保存 · 模型未能解析，请手动填写", fallback=True, message_id=mid)

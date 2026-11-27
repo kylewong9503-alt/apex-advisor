@@ -92,6 +92,7 @@ class App:
         self.sess: Optional[SettlementSession] = None  # 会后结算（内存里；重启后要重新开始）
         self.sess_hours: Optional[float] = None
         self.sess_review: Optional[dict] = None
+        self.notice = ""  # 下一次渲染时给你看一次的提示（比如模型没能解析）
         self.settle_pick: Optional[list] = None  # 同一场会有多个（行为，版本）要结算时，先让你选一项
         self.salt = secrets.token_bytes(16)  # 把提交绑定到所显示题目的标识：带盐哈希，不含任何原文
         self.lk: Optional[dict] = None  # 锁定预测进行中的选择（锁定前都可改，锁定后不可改）
@@ -221,8 +222,12 @@ class App:
                     btns.append({"label": "会后", "act": {"url": "/settle/start", "fields": {}, "reload": True}})
                 steps[-1]["buttons"] = btns
         steps = steps or [open_ask("今天想记一件什么事？", cue="直接说，不用先选人或填表", act={"url": "/say", "fields": {}})]
-        return render_flow(steps, rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner(),
+        return render_flow(steps, rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner(), notice=self._take_notice(),
                            say_href="" if steps[0]["kind"] == "open" else "/say")
+
+    def _take_notice(self) -> str:
+        n, self.notice = self.notice, ""
+        return n
 
     def say_html(self) -> str:
         """随时记一句：不论现在在哪个流程里。"""
@@ -484,8 +489,14 @@ class App:
     def say(self, text: str) -> None:
         text = text.strip()
         if text and self.intake is not None:
-            self.intake.handle(self.CID, text)
+            r = self.intake.handle(self.CID, text)
             self.lock.store.sync_world(self._world())
+            if r.fallback:
+                why = self.intake.last_error
+                print(f"[say] 模型没能解析：{why}", file=__import__("sys").stderr, flush=True)  # 只记原因，不记原话
+                self.notice = "模型没能解析这句话（原话已加密保存）。换种说法再试一次；如果反复出现，检查密钥或网络。" + (f"（{why}）" if why else "")
+            elif not r.draft_ids:
+                self.notice = "没有从这句话里整理出可以记下的内容。可以说得更具体一点。"
 
     def confirm(self, did: str, choice: str) -> None:
         store = self.lock.store
