@@ -686,6 +686,7 @@ if __name__ == "__main__":  # python -m people_reading.server --db my.db [--host
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True)
+    ap.add_argument("--visible", action="store_true", help="--init 时口令回显（iPad 等输入看不见、容易输错的场景）")
     ap.add_argument("--init", action="store_true", help="创建新的加密库（口令用 getpass 输入，不进命令行历史），然后退出")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
@@ -698,9 +699,18 @@ if __name__ == "__main__":  # python -m people_reading.server --db my.db [--host
         from .store import Store
         if os.path.exists(a.db):
             raise SystemExit("库已存在，不覆盖：" + a.db)
-        p1, p2 = getpass.getpass("设置口令："), getpass.getpass("再输一次：")
-        if p1 != p2 or len(p1) < 10:
-            raise SystemExit("两次不一致，或口令短于 10 位")
+        if a.visible:
+            p1 = input("设置口令（会显示出来，注意旁边没人，≥10 位）：").strip()
+            print(f"你输入的是 {len(p1)} 位：{p1}")
+            if input("确认无误请输入 y：").strip().lower() != "y":
+                raise SystemExit("已取消")
+            p2 = p1
+        else:
+            p1, p2 = getpass.getpass("设置口令："), getpass.getpass("再输一次：")
+        if p1 != p2:
+            raise SystemExit(f"两次不一致（第一次 {len(p1)} 位，第二次 {len(p2)} 位）。iPad 常见原因：首字母被自动大写、末尾多了空格；可加 --visible 让口令显示出来")
+        if len(p1) < 10:
+            raise SystemExit(f"口令只有 {len(p1)} 位，至少 10 位")
         Store(a.db, p1).close()
         os.chmod(a.db, 0o600)
         raise SystemExit("已创建 " + a.db)
