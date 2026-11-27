@@ -2,7 +2,7 @@
 
 帮助用户在具体事情上做决定，并能事后查清判断错在哪一步。开发说明见需求文档 v4.6。
 
-## 当前进度：第一项交付 + 第 1 步（固定计算）+ 第 2 步（对话录入、加密存储、本地模型）+ 第 3 步（议题与解读）+ 第 4 步（会前会后闭环）
+## 当前进度：第一项交付 + 第 1 步（固定计算）+ 第 2 步（对话录入、加密存储、本地模型）+ 第 3 步（议题与解读）+ 第 4 步（会前会后闭环）+ 第 5 步（全局视图与隐私）
 
 纯逻辑层（零依赖，内存实现）加最简演示页：
 
@@ -15,12 +15,13 @@
 - `people_reading/intake.py`：对话录入、草稿、确认、点回原话
 - `people_reading/skills.py` / `assistant.py` / `profile.py`：竞争解释 Skill、对话编排（调用 Skill / 回忆 / 事实更正）、人物个人页
 - `people_reading/judgment.py` / `premeeting.py` / `settle_flow.py` / `graph.py` / `workbench.py`：三行判断卡与两条时间线、会前准备、会后结算、议题关系小图、工作台与结算首屏
+- `people_reading/quadrants.py` / `panels.py` / `privacy.py` / `shell.py`：四象限首页、跨议题校准面板、隐私遮挡与解锁、应用外壳（电脑左栏 / 手机底部导航）
 - `people_reading/model_eval.py`：本地模型选型测试
 - `people_reading/scenarios.py`：验收用例数据
 - `people_reading/demo/demo.html`：演示页（C5-g 与 A.5.6）
 
 ```bash
-python -m pytest people_reading/tests   # 133 项测试；python -m people_reading.demo_step3 / demo_step4 生成演示页
+python -m pytest people_reading/tests   # 149 项测试；python -m people_reading.demo_step3 / demo_step4 / demo_step5 生成演示页
 python -m people_reading.demo           # 重新生成演示页
 ```
 

@@ -35,13 +35,15 @@ def render_settlement_page(screen: dict) -> str:
                 f"<p><b>{E(screen['open_question'])}</b></p><textarea rows='4' aria-label='你的回答'></textarea>", "会后")
 
 
-def card_html(c: dict) -> str:
+def card_html(c: dict, rd=None) -> str:
+    T = rd.t if rd is not None else (lambda x: x)
+    e = lambda x: E(T(x))  # noqa: E731  动态内容：遮挡时不输出原文
     h = c["header"]
-    rows = "".join(f"<div class='row'><b>{E(r['label'])}{'' if r.get('counts') is None else '（计入累计）' if r['counts'] else '（不计入）'}</b>{E(r['text'])}</div>"
+    rows = "".join(f"<div class='row'><b>{E(r['label'])}{'' if r.get('counts') is None else '（计入累计）' if r['counts'] else '（不计入）'}</b>{e(r['text'])}</div>"
                    for r in c["rows"])
     note = f" · {E(h['note'])}" if h["note"] else ""
-    return (f"<div class='card'><b>{E(h['statement'])}</b><div class='mut'>{E(h['by'])}{note}</div>{rows}"
-            f"<div class='mut'>{E(c['badge'])}</div>" + ("<div class='mut'>仍待区分：" + E("；".join(c["pending"])) + "</div>" if c["pending"] else "")
+    return (f"<div class='card'><b>{e(h['statement'])}</b><div class='mut'>{E(h['by'])}{note}</div>{rows}"
+            f"<div class='mut'>{E(c['badge'])}</div>" + ("<div class='mut'>仍待区分：" + e("；".join(c["pending"])) + "</div>" if c["pending"] else "")
             + "</div>")
 
 
@@ -68,25 +70,31 @@ def workbench_view(w: World, matter_id: str, store=None, *, session: Optional[Se
     return v
 
 
-def render_matter_page(v: dict, graph: Optional[dict] = None) -> str:
-    h = [f"<h1>{E(v['title'])} <button>切换议题</button></h1>", f"<p>当前目的：{E(v['purpose'])} <button>修改</button></p>",
-         "<h2>我的判断</h2>" + "".join(card_html(c) for c in v["my_judgments"]),
-         "<h2>模型提出的另一种可能</h2>" + "".join(card_html(c) for c in v["model_alternatives"])]
+def render_matter_page(v: dict, graph: Optional[dict] = None, rd=None) -> str:
+    return page(matter_body(v, graph, rd), "识人系统" if rd is not None and rd.masked else v["title"])
+
+
+def matter_body(v: dict, graph: Optional[dict] = None, rd=None) -> str:
+    T = rd.t if rd is not None else (lambda x: x)
+    E_ = lambda x: E(T(x))  # noqa: E731
+    h = [f"<h1>{E_(v['title'])} <button>切换议题</button></h1>", f"<p>当前目的：{E_(v['purpose'])} <button>修改</button></p>",
+         "<h2>我的判断</h2>" + "".join(card_html(c, rd) for c in v["my_judgments"]),
+         "<h2>模型提出的另一种可能</h2>" + "".join(card_html(c, rd) for c in v["model_alternatives"])]
     if v["fork"]:
         f = v["fork"]
-        h.append(f"<h2>值得问你的一件事</h2><div class='card'><b>{E(f['question'])}</b><ul>"
-                 + "".join(f"<li>若{E(b['condition'])}，建议{E(b['prep'])}</li>" for b in f["branches"])
-                 + f"</ul><button>{E(f['unsure_option'])}</button></div>")
+        h.append(f"<h2>值得问你的一件事</h2><div class='card'><b>{E_(f['question'])}</b><ul>"
+                 + "".join(f"<li>若{E_(b['condition'])}，建议{E_(b['prep'])}</li>" for b in f["branches"])
+                 + f"</ul><button>{E_(f['unsure_option'])}</button></div>")
     if v["actions"]:
         h.append("<h2>行动建议</h2>")
         for a in v["actions"]:
             if "request_line" in a:
-                h.append(f"<div class='card'>会上可用的一句话：{E(a['request_line']['text'])}<div class='mut'>理由：{E(a['request_line']['reason'])}</div></div>")
+                h.append(f"<div class='card'>会上可用的一句话：{E_(a['request_line']['text'])}<div class='mut'>理由：{E_(a['request_line']['reason'])}</div></div>")
             else:
-                h.append(f"<div class='card'>{E(a['text'])}<br><button>记为行动</button>"
-                         + (f"<button>锁定相关预测</button><span class='mut'>{E(a['prediction'])}</span>" if a["buttons"]["lock_prediction"] else "")
+                h.append(f"<div class='card'>{E_(a['text'])}<br><button>记为行动</button>"
+                         + (f"<button>锁定相关预测</button><span class='mut'>{E_(a['prediction'])}</span>" if a["buttons"]["lock_prediction"] else "")
                          + "</div>")
     if graph:
         h.append("<h2>本议题关系小图</h2>" + render_svg(graph))
     h.append(f"<textarea rows='2' placeholder='{E(v['placeholder'])}'></textarea>")
-    return page("".join(h), v["title"])
+    return "".join(h)

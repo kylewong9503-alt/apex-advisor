@@ -95,12 +95,15 @@ def build_profile(w: World, person_id: str, store=None) -> dict:
             "revisions": rev, "followups": follow, "interpretations": interps}
 
 
-def render_html(pf: dict) -> str:
-    e = html.escape
+def render_html(pf: dict, rd=None) -> str:
+    """rd：Redactor。所有动态字符串都经过它（遮挡时不输出原文）；固定的栏目标题不是敏感内容。"""
+    T = rd.t if rd is not None else (lambda x: x)
+    e = lambda x: html.escape(T(str(x)))  # noqa: E731
 
     def li(items):
         return "<ul>" + "".join(f"<li>{x}</li>" for x in items) + "</ul>" if items else "<p class='mut'>暂无</p>"
-    h = [f"<section><h2>{e(pf['header']['name'])} <button>{e(pf['header']['action'])}</button></h2>"]
+    name = rd.p(pf["header"]["id"]) if rd is not None else pf["header"]["name"]
+    h = [f"<section><h2>{html.escape(name)} <button>{html.escape('继续聊 ' + name)}</button></h2>"]
     h.append("<h3>职务</h3>" + li([e(f"{x['title']}｜{x['unit']}｜{x['from']}–{x['to'] if x['to'] else '至今'}") for x in pf["positions"]]))
     r = pf["relation"]
     rel = [f"结构关系：{e(x['direction'])} {e(x['type'])}" for x in r["structural"]]
@@ -113,14 +116,14 @@ def render_html(pf: dict) -> str:
         for name, s in m["roles"].items():
             roles.append(e(f"{m['matter']}｜{name}｜can：{s['can']}｜will：{s['will']}"))
     h.append("<h3>各议题中的角色</h3>" + li(roles))
-    h.append(f"<h3>判断卡 <span class='mut'>{e(pf['badge']['text'])}</span></h3>")
+    h.append(f"<h3>判断卡 <span class='mut'>{html.escape(pf['badge']['text'])}</span></h3>")
     h.append(li([e(c["text"]) for c in pf["judgment_cards"]] + ([e(f"三维对照 {k}：{v}") for k, v in pf["dimensions"].items()] if pf["dimensions"] else [])))
     tl = []
     for t in pf["timeline"]:
         for o in t["observations"]:
             q = "；".join(o["quotes"])
             tl.append(e(f"第 {t['day']} 天 {t['label']}｜{o['mode']}｜{o['reporter']}：{o['content']}") +
-                      (" <span class='mut'>[解读]</span>" if o["interpretation"] else "") + f"<br><span class='mut'>原话：{e(q)}</span>")
+                      (" <span class='mut'>[解读]</span>" if o["interpretation"] else "") + f"<br><span class='mut' data-evidence='{e(q)}'>原话：{e(q)}</span>")
     h.append("<h3>互动时间线</h3>" + li(tl))
     h.append("<h3>预测复盘与修订</h3>" + li([e(f"#{x['id']} {x['kind']}｜{x['subject']}｜{x['reason']}") for x in pf["revisions"]]))
     h.append("<h3>解读</h3>" + li([e(f"{x['id']} {x['skill']}：{x['question']}") + (" <b>依据已变化</b>" if x["stale"] else "") for x in pf["interpretations"]]))

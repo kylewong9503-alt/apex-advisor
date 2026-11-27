@@ -28,7 +28,14 @@ class Person:
     is_placeholder: bool = False
     placeholder_desc: str = ""
     merged_into_id: Optional[str] = None
-    quadrant_manual: Optional[str] = None
+    quadrant_manual: Optional[str] = None  # 近-深 | 近-浅 | 远-深 | 远-浅（MVP 由用户手动设置）
+    code: str = ""  # 代号；界面默认显示代号而不是姓名。为空时用 id
+    influence: int = 3  # 1–5，象限内排序用
+    quadrant_set_at: Optional[int] = None
+
+    @property
+    def shown_code(self) -> str:
+        return self.code or self.id
 
 
 @dataclass
@@ -597,3 +604,20 @@ class World:
                 f.status = "surfaced"
                 out.append(f)
         return out
+
+    # —— 象限（MVP 手动设置）——
+    QUADRANTS = ("近-深", "近-浅", "远-深", "远-浅")
+
+    def set_quadrant(self, person_id: str, quadrant: Optional[str], *, influence: Optional[int] = None) -> None:
+        if quadrant is not None and quadrant not in self.QUADRANTS:
+            raise WorldError(f"象限必须是 {self.QUADRANTS} 之一")
+        p = self.persons[person_id]
+        if p.is_self or p.is_placeholder:
+            raise WorldError("自己和占位人物不设象限")
+        if influence is not None:
+            if not 1 <= influence <= 5:
+                raise WorldError("影响力是 1–5")
+            p.influence = influence
+        if quadrant != p.quadrant_manual:
+            self._log("edge_update", f"quadrant:{person_id}", {"before": p.quadrant_manual, "after": quadrant}, "手动设置象限")
+        p.quadrant_manual, p.quadrant_set_at = quadrant, self.now()

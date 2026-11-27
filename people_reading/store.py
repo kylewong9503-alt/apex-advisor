@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS conversation(id TEXT PRIMARY KEY, title TEXT, matter_id TEXT, created_at TEXT, updated_at TEXT, pending_json TEXT);
 CREATE TABLE IF NOT EXISTS message(id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT, role TEXT, text TEXT, card_type TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS draft(id TEXT PRIMARY KEY, message_id INTEGER, source_spans TEXT, proposed TEXT, status TEXT, confirmed_ref TEXT, created_at TEXT);
-CREATE TABLE IF NOT EXISTS person(id TEXT PRIMARY KEY, display_name TEXT, aliases TEXT, is_self INTEGER, is_placeholder INTEGER, placeholder_desc TEXT, merged_into_id TEXT);
+CREATE TABLE IF NOT EXISTS person(id TEXT PRIMARY KEY, display_name TEXT, aliases TEXT, is_self INTEGER, is_placeholder INTEGER, placeholder_desc TEXT, merged_into_id TEXT, code TEXT, influence INTEGER, quadrant_manual TEXT, quadrant_set_at INTEGER);
 CREATE TABLE IF NOT EXISTS interaction(id TEXT PRIMARY KEY, label TEXT, status TEXT, facts TEXT);
 CREATE TABLE IF NOT EXISTS observation(id TEXT PRIMARY KEY, interaction_id TEXT, source_spans TEXT, kind TEXT, reporter_id TEXT, subject_person_id TEXT, content TEXT, is_interpretation INTEGER, source_mode TEXT, prompted_by_model INTEGER, involved TEXT, draft_id TEXT, recorded_at INTEGER);
 CREATE TABLE IF NOT EXISTS entity(kind TEXT, id TEXT, data TEXT, PRIMARY KEY(kind, id));
@@ -77,6 +77,11 @@ class Store:
                          self._e("conversation", "pending_json", cid, None)))
         self.db.commit()
 
+    def conversations(self) -> list:
+        """最近对话（侧栏用）：[(id, 标题, 更新时间)]，新的在前。"""
+        rows = [self._row("conversation", r) for r in self.db.execute("SELECT * FROM conversation ORDER BY rowid DESC")]
+        return [(r["id"], r["title"], r["updated_at"]) for r in rows]
+
     def set_pending(self, cid: str, pending: Optional[dict]) -> None:
         self.db.execute("UPDATE conversation SET pending_json=? WHERE id=?",
                         (self._e("conversation", "pending_json", cid, pending), cid))
@@ -119,10 +124,11 @@ class Store:
 
     # —— 事实 ——
     def save_person(self, p: Person, aliases: tuple = ()) -> None:
-        self.db.execute("INSERT OR REPLACE INTO person VALUES(?,?,?,?,?,?,?)",
+        self.db.execute("INSERT OR REPLACE INTO person VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                         (p.id, self._e("person", "display_name", p.id, p.display_name),
                          self._e("person", "aliases", p.id, list(aliases)), int(p.is_self), int(p.is_placeholder),
-                         self._e("person", "placeholder_desc", p.id, p.placeholder_desc), p.merged_into_id))
+                         self._e("person", "placeholder_desc", p.id, p.placeholder_desc), p.merged_into_id,
+                         p.code, p.influence, p.quadrant_manual, p.quadrant_set_at))
         self.db.commit()
 
     def save_interaction(self, iid: str, label: str, status: str, facts: dict) -> None:
@@ -166,6 +172,18 @@ class Store:
             self.save_entity("interpretation", iid, i)
         for r in w.revisions:
             self.save_entity("world_revision", str(r.id), dataclasses.asdict(r))
+        for p in w.persons.values():
+            if p.id == "user":
+                continue
+            if self.db.execute("SELECT 1 FROM person WHERE id=?", (p.id,)).fetchone():
+                self.db.execute(
+                    "UPDATE person SET display_name=?, is_placeholder=?, placeholder_desc=?, merged_into_id=?, code=?, influence=?,"
+                    " quadrant_manual=?, quadrant_set_at=? WHERE id=?",
+                    (self._e("person", "display_name", p.id, p.display_name), int(p.is_placeholder),
+                     self._e("person", "placeholder_desc", p.id, p.placeholder_desc), p.merged_into_id, p.code,
+                     p.influence, p.quadrant_manual, p.quadrant_set_at, p.id))  # 保留已存的别名
+            else:
+                self.save_person(p)
         for f in w.followups:
             self.save_followup(f)
         for iid, meta in w.interactions.items():
@@ -199,7 +217,8 @@ class Store:
             d = self._row("person", r)
             if d["id"] != "user":
                 w.add_person(Person(d["id"], d["display_name"], bool(d["is_self"]), bool(d["is_placeholder"]),
-                                    d["placeholder_desc"], d["merged_into_id"]))
+                                    d["placeholder_desc"], d["merged_into_id"], d["quadrant_manual"], d["code"] or "",
+                                    d["influence"] or 3, d["quadrant_set_at"]))
         for r in self.db.execute("SELECT * FROM interaction"):
             d = self._row("interaction", r)
             w.add_interaction(d["id"], d["label"], d["status"])
