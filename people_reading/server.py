@@ -18,10 +18,12 @@ from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
 from .crypto import WrongPassphrase
-from .flow import ask, build_prep_steps, open_ask, render_flow
+from .flow import build_settle_steps, ask, build_prep_steps, open_ask, render_flow
 from .intake import Intake
 from .llm import RemoteModel, make_model
+from .engine import EngineError
 from .premeeting import PreMeeting
+from .settle_flow import SettlementSession
 from .privacy import AppLock, Locked, Redactor, TooManyAttempts
 from .shell import render_app
 from .workbench import workbench_view
@@ -68,6 +70,9 @@ class App:
         self.model = model  # None = 未配置模型：只能手动，不编造
         self.w = None
         self.intake: Optional[Intake] = None
+        self.sess: Optional[SettlementSession] = None  # 会后结算（内存里；重启后要重新开始）
+        self.sess_hours: Optional[float] = None
+        self.sess_review: Optional[dict] = None
         self.pms: dict = {}  # 议题 → PreMeeting（模型只在会前页打开时调用一次，失败也缓存，不反复发送）
         self.pm_failed: set = set()
         self.token: Optional[str] = None
@@ -94,6 +99,7 @@ class App:
 
     def on_lock(self) -> None:
         self.w, self.intake, self.pms, self.pm_failed = None, None, {}, set()
+        self.sess, self.sess_hours, self.sess_review = None, None, None
 
     def _world(self):
         self.lock.store  # 已上锁会抛 Locked
@@ -134,20 +140,110 @@ class App:
         store = self.lock.store
         w = self._world()
         rd = Redactor(w, "masked" if self.masked else "code")
-        steps = self.pending_steps()
+        steps = self.settle_steps() or self.pending_steps()
         if not steps and w.matters:
             mid = list(w.matters)[-1]
             pm = self.pre_meeting(mid)
             v = workbench_view(w, mid, store, prep=pm.prep if pm else None)
             steps = build_prep_steps(v)
             if pm and steps and steps[-1]["kind"] == "answer":
-                steps[-1]["buttons"] = [{"label": "记为行动", "act": {"url": "/act", "fields": {"matter": mid}}}] + steps[-1]["buttons"][1:]
+                steps[-1]["buttons"] = [{"label": "记为行动", "act": {"url": "/act", "fields": {"matter": mid}}}] + steps[-1]["buttons"][1:] + \
+                    [{"label": "会后", "act": {"url": "/settle/start", "fields": {"matter": mid}, "reload": True}}]
         steps = steps or [open_ask("今天想记一件什么事？", cue="直接说，不用先选人或填表", act={"url": "/say", "fields": {}})]
         return render_flow(steps, rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner())
 
     def library_html(self) -> str:
         store = self.lock.store
         return render_app(self._world(), store, mode="masked" if self.masked else "code", toggle_href="")
+
+    # —— 会后结算：每一步都是服务端状态机的下一步；首份报告之前不出现任何候选答案 ——
+    def _planned(self):
+        w = self._world()
+        return next(((i, x) for i, x in reversed(list(w.interactions.items())) if x.get("status") == "planned" and x.get("with")), None)
+
+    def _open_premises(self) -> list:
+        s = self.sess
+        return [q for q in s.premise_questions() if not all((pid, q["premise_id"]) in s.answers for pid in q["prediction_ids"])]
+
+    def settle_steps(self) -> list:
+        s = self.sess
+        if s is None:
+            return []
+        if s.state == "awaiting_report":
+            if self.sess_hours is None:  # 先问“什么时候想起的”：这不含任何候选答案，只决定算当时记录还是事后回忆
+                return [ask("这些是什么时候的事？", [("会谈刚结束（48 小时内）", "", ""), ("已经过了两天以上", "rec", "记为事后回忆，不计入比较")],
+                            cue="先说明时间", selected=None, act={"url": "/settle/when", "fields": {}})]
+            scr = s.first_screen()
+            return [open_ask(scr["open_question"], cue=f"{scr['matter']} · {scr['meeting_time']}", act={"url": "/settle/report", "fields": {}})]
+        if s.state == "premise_check":
+            left = self._open_premises()
+            if left:
+                q = left[0]
+                return [ask(q["question"], [(o, "", "") for o in q["options"]], cue="先核对前提", selected=None,
+                            act={"url": "/settle/premise", "fields": {"pid": q["premise_id"]}})]
+            prop = s.propose_outcome()
+            if prop.get("reused"):
+                s.confirm_outcome()
+            else:
+                beh, _ = s._behavior_for()
+                cats = list(beh.categories) if beh.categories else [True, False]
+                sel = cats.index(prop["outcome"]) if prop.get("outcome") in cats else (len(cats) if prop.get("observable") is False else None)
+                basis = prop.get("basis")
+                return [ask("这次结果算哪一种？", [(str(c), "", "") for c in cats] + [("无法判断", "", "")],
+                            cue=f"依据：{basis}" if basis else "", selected=sel, act={"url": "/settle/outcome", "fields": {}})]
+        if s.state == "settled":
+            if self.sess_review is None:
+                self.sess_review = s.review(self.model)
+            cards = self.sess_review["cards"][:1]
+            if cards:
+                scr = {"open_question": "", "matter": "", "meeting_time": ""}
+                done = build_settle_steps(scr, (), None, cards)[-1]
+                done["act"] = {"url": "/settle/done", "fields": {}}
+                return [done]
+        return []
+
+    def settle_done(self) -> None:
+        if self.sess is None or self.sess.state != "settled":
+            raise KeyError("done")
+        self.sess, self.sess_hours, self.sess_review = None, None, None
+
+    def settle_start(self, mid: str) -> None:
+        got = self._planned()
+        if got is None or mid not in self._world().matters:
+            raise KeyError(mid)
+        iid, x = got
+        self.sess = SettlementSession(self.intake, mid, iid, self.model, x.get("label", ""))
+        self.sess_hours, self.sess_review = None, None
+
+    def settle_when(self, choice: str) -> None:
+        if self.sess is None or self.sess.state != "awaiting_report" or choice not in ("0", "1"):
+            raise KeyError("when")
+        self.sess_hours = 0.0 if choice == "0" else 72.0
+
+    def settle_report(self, text: str) -> None:
+        if self.sess is None or self.sess.state != "awaiting_report" or self.sess_hours is None or not text.strip():
+            raise KeyError("report")
+        self.sess.submit_report(self.CID, text.strip(), hours_since_event=self.sess_hours)
+
+    def settle_premise(self, pid: str, choice: str) -> None:
+        if self.sess is None or self.sess.state != "premise_check":
+            raise KeyError("premise")
+        q = next((x for x in self._open_premises() if x["premise_id"] == pid), None)
+        if q is None or not choice.isdigit() or int(choice) >= len(q["options"]):
+            raise KeyError("premise")
+        self.sess.answer_premise(q["premise_text"], q["options"][int(choice)], cutoff=q["cutoff"], anchor_event=q["anchor_event"])
+        self.lock.store.sync_world(self._world())
+
+    def settle_outcome(self, choice: str) -> None:
+        s = self.sess
+        if s is None or s.state != "premise_check" or self._open_premises():
+            raise KeyError("outcome")
+        beh, _ = s._behavior_for()
+        cats = list(beh.categories) if beh.categories else [True, False]
+        if not choice.isdigit() or int(choice) > len(cats):
+            raise KeyError("outcome")
+        i = int(choice)
+        s.confirm_outcome(unobservable=True) if i == len(cats) else s.confirm_outcome(cats[i])
 
     # —— 写操作（每个都先确认已解锁；落库后 sync_world）——
     def say(self, text: str) -> None:
@@ -292,9 +388,21 @@ def make_handler(app: App):
                         app.confirm((form.get("id") or [""])[0], (form.get("choice") or ["1"])[0])
                     elif path == "/act":
                         app.act((form.get("matter") or [""])[0])
+                    elif path == "/settle/start":
+                        app.settle_start((form.get("matter") or [""])[0])
+                    elif path == "/settle/done":
+                        app.settle_done()
+                    elif path == "/settle/when":
+                        app.settle_when((form.get("choice") or [""])[0])
+                    elif path == "/settle/report":
+                        app.settle_report((form.get("text") or [""])[0][:4000])
+                    elif path == "/settle/premise":
+                        app.settle_premise((form.get("pid") or [""])[0], (form.get("choice") or [""])[0])
+                    elif path == "/settle/outcome":
+                        app.settle_outcome((form.get("choice") or [""])[0])
                     else:
                         return self._send(404, "not found", "text/plain")
-            except (KeyError, Locked):
+            except (KeyError, Locked, EngineError):
                 return self._send(409, "not applicable", "text/plain")
             return self._redirect("/")
             return self._send(404, "not found", "text/plain")

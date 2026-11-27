@@ -161,3 +161,87 @@ def test_banner_only_when_external_model_is_on(tmp_path, monkeypatch):
         assert "外部模型已开启" in body and "dummy-key-not-real" not in body
     finally:
         s.shutdown(); s.server_close()
+
+
+def test_settlement_end_to_end_over_http(tmp_path):
+    from people_reading.llm import ScriptedModel
+    from people_reading.tests import test_step4 as T4
+    w, st, it, pm, mid, iid = T4.c2(tmp_path)
+    it.model.outputs = [T4.PREP_OUT, T4.C3_OUT, {"branch": "A"}, T4.REVISED]
+    pm.prepare(); pm.confirm_categories(); pm.formalize(T4.DIST_H)
+    pm.answer_fork("c1", T4.C3_TEXT); pm.revise_after_fork("A", T4.C3_TEXT)
+    pm.record_action("目标", ["分工说明"]); pm.lock_prediction(T4.DIST_P, T4.S.PREMISE_F1)
+    path = st.path; st.close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel([T4.report_out(T4.REPORT_DRAFTS), T4.proposal(), T4.REVIEW]))
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    try:
+        ck = login(s)
+        # 没有开始结算时，乱发结算请求一律 409，不改任何状态
+        for p, b in (("/settle/report", "text=x"), ("/settle/premise", "pid=a&choice=0"), ("/settle/outcome", "choice=0")):
+            assert req(s, "POST", p, b, headers=ck)[0] == 409
+        assert req(s, "POST", "/settle/start", f"matter={mid}", headers=ck)[0] == 303
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "什么时候的事" in body
+        assert req(s, "POST", "/settle/report", "text=x", headers=ck)[0] == 409  # 没说时间就不能提交
+        assert req(s, "POST", "/settle/when", "choice=0", headers=ck)[0] == 303
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "<textarea" in body and "role='radio'" not in body.split("<script>")[0]  # 首屏开放题，没有候选答案
+        assert "先问职责" not in body and "专家需求" not in body
+        assert req(s, "POST", "/settle/report", "text=" + quote(T4.REPORT), headers=ck)[0] == 303
+        q = s.app.sess.premise_questions()[0]
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "先核对前提" in body
+        assert req(s, "POST", "/settle/premise", f"pid={q['premise_id']}&choice=99", headers=ck)[0] == 409
+        assert req(s, "POST", "/settle/premise", f"pid={q['premise_id']}&choice={q['options'].index('都没有')}", headers=ck)[0] == 303
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "这次结果算哪一种" in body
+        cats = list(s.app.sess._behavior_for()[0].categories)
+        assert req(s, "POST", "/settle/outcome", f"choice={cats.index('专家需求')}", headers=ck)[0] == 303
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "4×" in body and "结果" in body
+        assert s.app.w.engine.preds["P-1"].st.status == "settled"
+        assert req(s, "POST", "/settle/outcome", "choice=0", headers=ck)[0] == 409  # 已结算，不能再确认（幂等）
+        assert req(s, "POST", "/settle/done", headers=ck)[0] == 303 and s.app.sess is None
+        assert s.app.w.engine.preds["P-1"].st.status == "settled"  # 结束只关闭这次会话，不动结果
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_settlement_late_report_is_recall_and_not_counted(tmp_path):
+    from people_reading.llm import ScriptedModel
+    from people_reading.tests import test_step4 as T4
+    w, st, it, pm, mid, iid = T4.c2(tmp_path)
+    it.model.outputs = [T4.PREP_OUT, T4.C3_OUT, {"branch": "A"}, T4.REVISED]
+    pm.prepare(); pm.confirm_categories(); pm.formalize(T4.DIST_H)
+    pm.answer_fork("c1", T4.C3_TEXT); pm.revise_after_fork("A", T4.C3_TEXT)
+    pm.record_action("目标", ["分工说明"]); pm.lock_prediction(T4.DIST_P, T4.S.PREMISE_F1)
+    path = st.path; st.close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel([T4.report_out(T4.REPORT_DRAFTS), T4.proposal(), T4.REVIEW]))
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    try:
+        ck = login(s)
+        # 没有开始结算时，乱发结算请求一律 409，不改任何状态
+        for p, b in (("/settle/report", "text=x"), ("/settle/premise", "pid=a&choice=0"), ("/settle/outcome", "choice=0")):
+            assert req(s, "POST", p, b, headers=ck)[0] == 409
+        assert req(s, "POST", "/settle/start", f"matter={mid}", headers=ck)[0] == 303
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "什么时候的事" in body
+        assert req(s, "POST", "/settle/report", "text=x", headers=ck)[0] == 409  # 没说时间就不能提交
+        assert req(s, "POST", "/settle/when", "choice=1", headers=ck)[0] == 303
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "<textarea" in body and "role='radio'" not in body.split("<script>")[0]  # 首屏开放题，没有候选答案
+        assert "先问职责" not in body and "专家需求" not in body
+        assert req(s, "POST", "/settle/report", "text=" + quote(T4.REPORT), headers=ck)[0] == 303
+        q = s.app.sess.premise_questions()[0]
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "先核对前提" in body
+        assert req(s, "POST", "/settle/premise", f"pid={q['premise_id']}&choice=99", headers=ck)[0] == 409
+        assert req(s, "POST", "/settle/premise", f"pid={q['premise_id']}&choice={q['options'].index('都没有')}", headers=ck)[0] == 303
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "这次结果算哪一种" in body
+        cats = list(s.app.sess._behavior_for()[0].categories)
+        assert req(s, "POST", "/settle/outcome", f"choice={cats.index('专家需求')}", headers=ck)[0] == 303
+        rows = list(s.app.w.engine.rows.values()) if isinstance(s.app.w.engine.rows, dict) else list(s.app.w.engine.rows)
+        assert rows and all(getattr(r, "status", None) != "counted" for r in rows)  # R10：事后回忆不进入比较
+    finally:
+        s.shutdown(); s.server_close()

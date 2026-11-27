@@ -235,14 +235,14 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识
             core = (f"{cue}<p class='line'>“{e(s['line'])}”</p><p class='why'>{e(s['reason'])}</p>")
             def one(k, b):
                 label, a = (b, None) if isinstance(b, str) else (b["label"], b.get("act"))
-                return f"<button type='button' class='btn {'p' if k == 0 else 'o'}'{actattr(a) + ' data-once' if a else ''}>{E(label)}</button>"
+                return f"<button type='button' class='btn {'p' if k == 0 else 'o'}'{(actattr(a) + ('' if a.get('reload') else ' data-once') + (' data-reload' if a.get('reload') else '')) if a else ''}>{E(label)}</button>"
             btns = "".join(one(k, b) for k, b in enumerate(s["buttons"]))
             ft = f"<div class='ft'><div>{btns}</div><button type='button' class='btn q' data-next>会后</button></div>" if not last else f"<div class='ft'><div>{btns}</div></div>"
         else:  # result
             big = (f"<div class='bign'><span class='big'>{e(s['big'])}</span><span>{e(s['big_note'])}</span></div>" if s.get("big") else "")
             core = f"{cue}<h1>{e(s['title'])}</h1>{big}<p class='why'>{e(s['note'])}</p>"
             lib = f"<a class='btn q' href='{E(library_href)}'>人物与关系图</a>" if library_href else ""
-            ft = f"<div class='ft'><div><button type='button' class='btn p'>完成</button>{lib}</div></div>"
+            ft = f"<div class='ft'><div><button type='button' class='btn p'{actattr(s.get('act'))}>完成</button>{lib}</div></div>"
         secs.append(f"<section class='step {side}' aria-label='第 {i + 1} 步'><div class='pane{' dark' if dark else ''}' aria-hidden='true'>{art}</div>"
                     f"<div class='body'>{hd}<div>{core}</div>{ft}</div></section>")
     defs = f"<svg width='0' height='0' style='position:absolute' aria-hidden='true'><defs>{_scale_defs()}</defs></svg>"

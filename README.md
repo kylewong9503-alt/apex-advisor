@@ -22,7 +22,7 @@
 - `people_reading/demo/demo.html`：演示页（C5-g 与 A.5.6）
 
 ```bash
-python -m pytest people_reading/tests   # 233 项测试；python -m people_reading.demo_step3 … demo_step6 生成演示页
+python -m pytest people_reading/tests   # 235 项测试；python -m people_reading.demo_step3 … demo_step6 生成演示页
 python -m people_reading.demo           # 重新生成演示页
 ```
 
@@ -66,4 +66,4 @@ model = make_model()                  # 按 PR_PROVIDER 返回 LocalModel 或 Re
 
 **接 DeepSeek**（会把原话发到外部服务，先读 llm.py 里的说明）：在启动服务的电脑上设环境变量，不要把 key 写进文件或发到对话里：
 `PR_PROVIDER=deepseek PR_ALLOW_EXTERNAL=1 DEEPSEEK_API_KEY=… python -m people_reading.server --db my.db`；开启后页面顶部常驻“外部模型已开启”。
-已接通：说一句 → 草稿 → 逐条确认/不记；会前页的“记为行动”。未接通：锁定预测（需要类别与概率的输入界面）、会后结算。
+已接通：说一句 → 草稿 → 逐条确认/不记；会前页的“记为行动”；会后结算（说明时间 → 开放题 → 前提核对 → 确认结果 → 复盘结果）。未接通：锁定预测（需要类别与概率的输入界面）。结算会话在服务内存里，重启后需重新开始。
