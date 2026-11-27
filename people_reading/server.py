@@ -28,15 +28,16 @@ from .premeeting import CONFIDENCE, RULE_P, PreMeeting, make_premise, profile
 from .settle_flow import SettlementSession
 from .privacy import AppLock, Locked, Redactor, TooManyAttempts
 from .shell import render_app
+from .theme import BRAND, mark_svg
+
+ICON = mark_svg()
 from .workbench import workbench_view
 
 E = html.escape
 CSP = ("default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; "
        "manifest-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
-MANIFEST = ('{"name":"识人","short_name":"识人","start_url":"/","display":"standalone","background_color":"#f4f1e9",'
+MANIFEST = ('{"name":"Kagami","short_name":"Kagami","start_url":"/","display":"standalone","background_color":"#f4f1e9",'
             '"theme_color":"#1f3b61","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}')
-ICON = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' fill='#14243d'/>"
-        "<g fill='none' stroke='#f4f1e9' stroke-width='2'><circle cx='32' cy='38' r='22'/><circle cx='32' cy='38' r='15'/><circle cx='32' cy='38' r='8'/></g></svg>")
 HEAD_EXTRA = "<link rel='manifest' href='/manifest.webmanifest'><meta name='theme-color' content='#1f3b61'><link rel='icon' href='/icon.svg'>"
 
 
@@ -47,7 +48,7 @@ def is_loopback(host: str) -> bool:
         return host == "localhost"
 
 
-def _page(body: str, title: str = "识人") -> str:
+def _page(body: str, title: str = BRAND) -> str:
     from .flow import FLOW_CSS
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>"
             f"<title>{E(title)}</title><meta name='privacy-capture' content='deny'>{HEAD_EXTRA}<style>{FLOW_CSS}"
@@ -57,7 +58,7 @@ def _page(body: str, title: str = "识人") -> str:
 
 
 def unlock_page(msg: str = "") -> str:
-    return _page("<form class='gate' method='post' action='/unlock'><span class='brand'>识人</span><h1 style='font-size:28px;margin:0'>输入口令</h1>"
+    return _page("<form class='gate' method='post' action='/unlock'><span class='brand'>" + mark_svg(28) + BRAND + "</span><h1 style='font-size:28px;margin:0'>输入口令</h1>"
                  "<input type='password' name='passphrase' autocomplete='current-password' aria-label='口令' autofocus>"
                  + (f"<p class='why'>{E(msg)}</p>" if msg else "") + "<button class='btn p' type='submit' style='justify-content:center'>解锁</button></form>")
 

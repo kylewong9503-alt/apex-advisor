@@ -60,8 +60,8 @@ main{max-width:860px;margin:0 auto;padding:24px 16px 64px}h1{font-size:22px}h2{f
 h3{font-size:15px;color:var(--acc);margin:16px 0 4px}.m{padding:8px 12px;margin:6px 0;border-radius:6px;background:var(--card);white-space:pre-wrap}
 .me{background:transparent;border:1px solid var(--line)}.mut{color:var(--mut);font-size:13px}button{font:inherit;padding:2px 10px}
 section{border:1px solid var(--line);border-radius:8px;padding:4px 16px 12px;margin:12px 0}ul{padding-left:20px}"""
-    h = [f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>识人系统 第 3 步演示</title><style>{css}</style></head><body><main>",
-         "<h1>识人系统 v4.6 · 第 3 步演示</h1><p class='mut'>第 9 节 ④–⑤：竞争解释 Skill、回忆、事实更正。录入阶段的模型输出是脚本化演示数据（未接真实模型），其余数字、状态、句子均由程序算出。</p>",
+    h = [f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Kagami 第 3 步演示</title><style>{css}</style></head><body><main>",
+         "<h1>Kagami v4.6 · 第 3 步演示</h1><p class='mut'>第 9 节 ④–⑤：竞争解释 Skill、回忆、事实更正。录入阶段的模型输出是脚本化演示数据（未接真实模型），其余数字、状态、句子均由程序算出。</p>",
          "<h2>对话</h2>"]
     for who, text, kind in chat:
         h.append(f"<div class='m {'me' if who == '我' else ''}'><b>{who}</b>　{E(text)}</div>")

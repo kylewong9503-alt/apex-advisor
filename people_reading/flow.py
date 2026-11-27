@@ -17,7 +17,7 @@ import re
 from typing import Optional
 
 from .privacy import NO_CAPTURE_META, PRINT_GUARD_CSS, Redactor
-from .theme import TOKENS_CSS
+from .theme import BRAND, TOKENS_CSS, mark_data_uri, mark_svg
 
 E = html.escape
 MARKS = {"you": "mk-you", "model": "mk-model", "rec": "mk-rec", "": ""}
@@ -142,7 +142,7 @@ body{margin:0;background:var(--surface);color:var(--ink);font:15px/26px var(--fo
 .step.right{flex-direction:row-reverse}
 .body{flex:1;min-width:0;padding:56px clamp(24px,6vw,96px);display:flex;flex-direction:column;justify-content:space-between;max-width:880px;margin:0 auto;width:100%}
 .hd{display:flex;justify-content:space-between;align-items:center}
-.brand{font:600 18px/1 var(--font-sans);letter-spacing:.12em}
+.brand{font:600 18px/1 var(--font-sans);letter-spacing:.06em;display:inline-flex;align-items:center;gap:10px}.brand svg{border-radius:4px}
 .dots{display:flex;gap:6px}.dots svg{width:22px;height:22px;fill:none;stroke:var(--ai);stroke-width:1.2;opacity:.45}.dots svg.on{fill:var(--ai);opacity:1}.dots svg.on circle+circle{stroke:var(--surface)}
 .cue{font:500 11px/16px var(--font-sans);letter-spacing:.16em;color:var(--ink-muted);margin-bottom:16px}
 h1{font:600 clamp(26px,3.2vw,44px)/1.4 var(--font-sans);letter-spacing:.02em;margin:0 0 40px}
@@ -196,7 +196,7 @@ document.addEventListener('keydown',function(e){var s=S[cur()-1];if(!s||e.target
 VARIANTS = [("classic", "l"), ("banded", "r"), ("dotted", "t"), ("ripple", "l"), ("tide", "r"), ("fade", "t")]
 
 
-def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识人", library_href: str = "", head_extra: str = "", banner: str = "") -> str:
+def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAND, library_href: str = "", head_extra: str = "", banner: str = "") -> str:
     T = rd.t if rd is not None else (lambda x: x)
     e = lambda x: E(T(str(x)))  # noqa: E731  动态内容：遮挡时不输出原文
     masked = bool(rd is not None and rd.masked)
@@ -213,7 +213,7 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识
             vi += 1
         art = pattern(variant, 560 if side != "t" else 1440, 900 if side != "t" else 230, uid=str(i),
                       ground="var(--kon)" if dark else "var(--surface)")
-        hd = f"<div class='hd'><span class='brand'>识人</span>{steps_dots(i + 1, total)}</div>"
+        hd = f"<div class='hd'><span class='brand'>{mark_svg(22)}{BRAND}</span>{steps_dots(i + 1, total)}</div>"
         cue = f"<div class='cue'>{e(s['cue'])}</div>" if s.get("cue") else ""
         def actattr(a):  # 这一步的“继续”要先把选择提交给服务：{"url": "/confirm", "fields": {...}}
             if not a:
@@ -254,6 +254,6 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识
         secs.append(f"<section class='step {side}' aria-label='第 {i + 1} 步'><div class='pane{' dark' if dark else ''}' aria-hidden='true'>{art}</div>"
                     f"<div class='body'>{hd}<div>{core}</div>{ft}</div></section>")
     defs = f"<svg width='0' height='0' style='position:absolute' aria-hidden='true'><defs>{_scale_defs()}</defs></svg>"
-    ttl = "识人" if masked else title
+    ttl = BRAND if masked else title
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>{E(ttl)}</title>{NO_CAPTURE_META}{head_extra}<style>{FLOW_CSS}{PRINT_GUARD_CSS}</style></head><body>{defs}{(f"<div class='bn' role='status'>{E(banner)}</div>" if banner else '')}{''.join(secs)}<script>{FLOW_JS}</script></body></html>")
+            f"<title>{E(ttl)}</title>{NO_CAPTURE_META}<link rel='icon' href='{mark_data_uri()}'>{head_extra}<style>{FLOW_CSS}{PRINT_GUARD_CSS}</style></head><body>{defs}{(f"<div class='bn' role='status'>{E(banner)}</div>" if banner else '')}{''.join(secs)}<script>{FLOW_JS}</script></body></html>")

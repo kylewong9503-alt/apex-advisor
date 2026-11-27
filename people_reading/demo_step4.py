@@ -77,8 +77,8 @@ def run() -> str:
     cal = w.engine.calibration(matter_id=mid)["categorical"]
     block("C6 本议题校准结果（多类别组，范围 0–2）", f"<div class='card'>锁定 {cal['locked']}，结算 {cal['settled']}；平均 Brier {cal['mean_brier']}，平均基线 {cal['mean_baseline']:.3f}</div>")
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>识人系统 第 4 步演示</title><style>{CSS}h2{{border-top:1px solid var(--line);padding-top:16px;margin-top:32px;font-size:17px}}</style></head><body><main>"
-            "<h1>识人系统 v4.6 · 第 4 步演示（CFO 会谈闭环）</h1><p class='mut'>模型输出为脚本化演示数据（未接真实模型）；其余全部由程序算出。</p>"
+            f"<title>Kagami 第 4 步演示</title><style>{CSS}h2{{border-top:1px solid var(--line);padding-top:16px;margin-top:32px;font-size:17px}}</style></head><body><main>"
+            "<h1>Kagami v4.6 · 第 4 步演示（CFO 会谈闭环）</h1><p class='mut'>模型输出为脚本化演示数据（未接真实模型）；其余全部由程序算出。</p>"
             + "".join(sec) + "</main></body></html>")
 
 

@@ -46,7 +46,7 @@ def build_store(full: bool = False):
 def main() -> None:
     w, prep, settle = build()
     for name, steps, lib in (("flow_prep", prep, ""), ("flow_settle", settle, "step5.html")):
-        (DIR / f"{name}.html").write_text(render_flow(steps, rd=Redactor(w, "code"), title="识人", library_href=lib), encoding="utf-8")
+        (DIR / f"{name}.html").write_text(render_flow(steps, rd=Redactor(w, "code"), library_href=lib), encoding="utf-8")
         (DIR / f"{name}_masked.html").write_text(render_flow(steps, rd=Redactor(w, "masked"), library_href=lib), encoding="utf-8")
     print("已写入", DIR / "flow_prep.html", "和", DIR / "flow_settle.html")
 

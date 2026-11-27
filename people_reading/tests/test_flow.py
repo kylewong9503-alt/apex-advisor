@@ -36,14 +36,17 @@ def test_masked_flow_has_no_names_quotes_or_title():
         page = render_flow(steps, rd=Redactor(w, "masked"), title="争取集团专家支持")
         for s in secret:
             assert s not in page.split("<script>")[0], s
-        assert "<title>识人</title>" in page
+        assert "<title>Kagami</title>" in page
 
 
 def test_flow_is_deterministic_and_has_no_external_resources():
     w, prep, settle = _built()
     a = render_flow(prep, rd=Redactor(w, "code"))
     assert a == render_flow(prep, rd=Redactor(w, "code"))
-    for bad in ("http://", "https://", "@import", "<link", "src="):
+    import re as _re
+    for href in _re.findall(r"<link[^>]*href='([^']*)'", a):
+        assert href.startswith("data:")  # 唯一的 link 是内嵌的标志图标
+    for bad in ("http://", "https://", "@import", "src="):
         assert bad not in a.replace("http://www.w3.org", "")
 
 

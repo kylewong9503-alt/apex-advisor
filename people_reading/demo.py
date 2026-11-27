@@ -104,8 +104,8 @@ th,td{border:1px solid var(--line);padding:5px 8px;text-align:left;vertical-alig
 .card{background:var(--card);border-left:3px solid var(--acc);padding:10px 14px;margin:8px 0;border-radius:4px}
 .warn{border-left-color:var(--warn)}.mut{color:var(--mut);font-size:13px}code{font-size:13px}"""
     s = [f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-         f"<title>识人系统 第一项交付演示</title><style>{css}</style></head><body><main>",
-         "<h1>识人系统 v4.6 · 第一项交付演示</h1>",
+         f"<title>Kagami 第一项交付演示</title><style>{css}</style></head><body><main>",
+         "<h1>Kagami v4.6 · 第一项交付演示</h1>",
          "<p class='mut'>本页由 <code>python -m people_reading.demo</code> 生成。所有数字、状态、句子均由计算内核当场算出，页面里没有手写结果。</p>"]
     # 例一
     s.append("<h2>例一 · 同一场会、同一个结果，两份预测的结算状态不同（C5-g）</h2>")

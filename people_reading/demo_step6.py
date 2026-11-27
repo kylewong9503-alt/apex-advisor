@@ -69,7 +69,7 @@ def run() -> str:
     sec.append("<h2>承诺账本（丁）</h2><p class='mut'>只记录谁欠谁什么、何时到期、依据哪句原话；兑现/违约必须回指原话；逾期由到期日与今天推出；不打分，不据此给人下判断。</p>"
                + "<p><b>他欠我</b></p>" + table(["承诺", "到期", "状态"], [(r["content"], r["due"], STATE[r["state"]]) for r in led["owes_me"]])
                + "<p><b>我欠他</b></p>" + table(["承诺", "到期", "状态"], [(r["content"], r["due"], STATE[r["state"]]) for r in led["i_owe"]]))
-    return page("<h1>识人系统 v4.6 · 第 6 步演示</h1><p class='mut'>观察排序完善、象限自动计算与迁移、承诺账本。数据来自验收 A 的 X 与同级人物。</p>" + "".join(sec), "识人系统 第 6 步演示")
+    return page("<h1>Kagami v4.6 · 第 6 步演示</h1><p class='mut'>观察排序完善、象限自动计算与迁移、承诺账本。数据来自验收 A 的 X 与同级人物。</p>" + "".join(sec), "Kagami 第 6 步演示")
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ E = html.escape
 CSS = BASE_CSS
 
 
-def page(body: str, title: str = "识人系统") -> str:
+def page(body: str, title: str = "Kagami") -> str:
     return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"<title>{E(title)}</title><style>{CSS}</style></head><body><main>{wave_band()}{body}</main></body></html>")
 
@@ -66,7 +66,7 @@ def workbench_view(w: World, matter_id: str, store=None, *, session: Optional[Se
 
 
 def render_matter_page(v: dict, graph: Optional[dict] = None, rd=None) -> str:
-    return page(matter_body(v, graph, rd), "识人系统" if rd is not None and rd.masked else v["title"])
+    return page(matter_body(v, graph, rd), "Kagami" if rd is not None and rd.masked else v["title"])
 
 
 def matter_body(v: dict, graph: Optional[dict] = None, rd=None) -> str:
