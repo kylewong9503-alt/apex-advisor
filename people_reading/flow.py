@@ -17,7 +17,7 @@ import re
 from typing import Optional
 
 from .privacy import NO_CAPTURE_META, PRINT_GUARD_CSS, Redactor
-from .theme import BRAND, TOKENS_CSS, mark_data_uri, mark_svg
+from .theme import BRAND, TOKENS_CSS, enso_path, mark_data_uri, mark_svg
 
 E = html.escape
 MARKS = {"you": "mk-you", "model": "mk-model", "rec": "mk-rec", "": ""}
@@ -93,9 +93,9 @@ def _scale_defs() -> str:
         return "".join(out)
     R = 26
     g = {
-        "classic": rings(4, R, "var(--ai)", "var(--g)"),
-        "ripple_hi": rings(7, R, "var(--ai)", "var(--g)"), "ripple_lo": rings(2, R, "var(--ai)", "var(--g)"),
-        "dotted": rings(4, R, "var(--ai)", "var(--g)", " stroke-dasharray='.1 5' stroke-linecap='round' stroke-width='2.2'"),
+        "classic": rings(4, R, "var(--hanada)", "var(--g)"),
+        "ripple_hi": rings(7, R, "var(--hanada)", "var(--g)"), "ripple_lo": rings(2, R, "var(--hanada)", "var(--g)"),
+        "dotted": rings(4, R, "var(--hanada)", "var(--g)", " stroke-dasharray='.1 5' stroke-linecap='round' stroke-width='2.2'"),
         "yoru": "".join(f"<circle r='{round(R * i / 4, 2)}' fill='{'var(--g)' if i == 4 else 'none'}' stroke='{'var(--on-kon)' if i % 2 else 'var(--asagi)'}'/>" for i in (4, 3, 2, 1)),
     }
     cols = ["var(--ai)", "var(--hanada)", "var(--asagi)", "var(--mizu)"]
@@ -128,8 +128,11 @@ def pattern(variant: str, w: int, h: int, *, uid: str, R: int = 26, ground: str 
 
 
 def steps_dots(n: int, total: int) -> str:
-    return "<span class='dots' role='img' aria-label='进度'>" + "".join(
-        f"<svg viewBox='0 0 22 22' class='{'on' if i < n else ''}'><circle cx='11' cy='11' r='10'/><circle cx='11' cy='11' r='6'/></svg>" for i in range(total)) + "</span>"
+    """进度：一笔圆相随步骤画满（不写“第几步”）。底下是一道很淡的整圈。"""
+    sweep = max(24, 330 * n / max(total, 1))
+    return (f"<span class='dots' role='img' aria-label='第 {n} 步，共 {total} 步'>"
+            f"<svg viewBox='0 0 64 64'><circle cx='32' cy='32' r='19' fill='none' stroke='var(--line)' stroke-width='2'/>"
+            f"<path d='{enso_path(sweep=sweep)}' fill='var(--ai)'/></svg></span>")
 
 
 # ───────────────────────── 渲染 ─────────────────────────
@@ -142,8 +145,8 @@ body{margin:0;background:var(--surface);color:var(--ink);font:15px/26px var(--fo
 .step.right{flex-direction:row-reverse}
 .body{flex:1;min-width:0;padding:56px clamp(24px,6vw,96px);display:flex;flex-direction:column;justify-content:space-between;max-width:880px;margin:0 auto;width:100%}
 .hd{display:flex;justify-content:space-between;align-items:center}
-.brand{font:600 18px/1 var(--font-sans);letter-spacing:.06em;display:inline-flex;align-items:center;gap:10px}.brand svg{border-radius:4px}
-.dots{display:flex;gap:6px}.dots svg{width:22px;height:22px;fill:none;stroke:var(--ai);stroke-width:1.2;opacity:.45}.dots svg.on{fill:var(--ai);opacity:1}.dots svg.on circle+circle{stroke:var(--surface)}
+.brand{font:600 18px/1 var(--font-sans);letter-spacing:.06em;display:inline-flex;align-items:center;gap:10px}.brand svg{border-radius:9px;box-shadow:0 0 0 1px var(--line)}
+.dots{display:flex}.dots svg{width:34px;height:34px}
 .cue{font:500 11px/16px var(--font-sans);letter-spacing:.16em;color:var(--ink-muted);margin-bottom:16px}
 h1{font:600 clamp(26px,3.2vw,44px)/1.4 var(--font-sans);letter-spacing:.02em;margin:0 0 40px}
 .opts{display:flex;flex-direction:column}
@@ -151,7 +154,7 @@ h1{font:600 clamp(26px,3.2vw,44px)/1.4 var(--font-sans);letter-spacing:.02em;mar
 .opt:last-child{border-bottom:1px solid var(--line)}
 .opt .k{width:26px;height:26px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);font-size:12px;display:flex;align-items:center;justify-content:center;color:var(--ink-muted);flex:none}
 .opt small{display:block;font-size:13px;color:var(--ink-muted)}
-.opt[aria-checked=true]{background:var(--ai);color:var(--on-ai);margin:0 -16px;padding:18px 16px;width:calc(100% + 32px);border-color:var(--ai)}
+.opt[aria-checked=true]{border-radius:var(--radius-md);background:var(--ai);color:var(--on-ai);margin:0 -16px;padding:18px 16px;width:calc(100% + 32px);border-color:var(--ai)}
 .opt[aria-checked=true] .k{border-color:var(--on-ai);color:var(--on-ai)}.opt[aria-checked=true] small{color:var(--on-ai);opacity:.85}
 .mk-you,.mk-model,.mk-rec{display:inline-block;margin-right:8px;flex:none}
 .mk-you{width:10px;height:10px;border-radius:50%;background:var(--ai)}.mk-model{width:10px;height:10px;border-radius:50%;border:1.5px dashed var(--hanada)}
@@ -213,7 +216,7 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
             vi += 1
         art = pattern(variant, 560 if side != "t" else 1440, 900 if side != "t" else 230, uid=str(i),
                       ground="var(--kon)" if dark else "var(--surface)")
-        hd = f"<div class='hd'><span class='brand'>{mark_svg(22)}{BRAND}</span>{steps_dots(i + 1, total)}</div>"
+        hd = f"<div class='hd'><span class='brand'>{mark_svg(32)}{BRAND}</span>{steps_dots(i + 1, total)}</div>"
         cue = f"<div class='cue'>{e(s['cue'])}</div>" if s.get("cue") else ""
         def actattr(a):  # 这一步的“继续”要先把选择提交给服务：{"url": "/confirm", "fields": {...}}
             if not a:
