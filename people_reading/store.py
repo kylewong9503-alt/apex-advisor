@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS message(id INTEGER PRIMARY KEY AUTOINCREMENT, convers
 CREATE TABLE IF NOT EXISTS draft(id TEXT PRIMARY KEY, message_id INTEGER, source_spans TEXT, proposed TEXT, status TEXT, confirmed_ref TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS person(id TEXT PRIMARY KEY, display_name TEXT, aliases TEXT, is_self INTEGER, is_placeholder INTEGER, placeholder_desc TEXT, merged_into_id TEXT, code TEXT, influence INTEGER, quadrant_manual TEXT, quadrant_set_at INTEGER, quadrant_auto TEXT);
 CREATE TABLE IF NOT EXISTS interaction(id TEXT PRIMARY KEY, label TEXT, status TEXT, facts TEXT);
-CREATE TABLE IF NOT EXISTS observation(id TEXT PRIMARY KEY, interaction_id TEXT, source_spans TEXT, kind TEXT, reporter_id TEXT, subject_person_id TEXT, content TEXT, is_interpretation INTEGER, source_mode TEXT, prompted_by_model INTEGER, involved TEXT, draft_id TEXT, recorded_at INTEGER);
+CREATE TABLE IF NOT EXISTS observation(id TEXT PRIMARY KEY, interaction_id TEXT, source_spans TEXT, kind TEXT, reporter_id TEXT, subject_person_id TEXT, content TEXT, is_interpretation INTEGER, source_mode TEXT, prompted_by_model INTEGER, involved TEXT, draft_id TEXT, recorded_at INTEGER, summary TEXT);
 CREATE TABLE IF NOT EXISTS entity(kind TEXT, id TEXT, data TEXT, PRIMARY KEY(kind, id));
 CREATE TABLE IF NOT EXISTS followup(id TEXT PRIMARY KEY, kind TEXT, target_ref TEXT, trigger_ TEXT, text TEXT, status TEXT);
 """
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS followup(id TEXT PRIMARY KEY, kind TEXT, target_ref T
 ENC = {  # 加密列
     "message": ("text",), "draft": ("source_spans", "proposed"), "conversation": ("title", "pending_json"),
     "person": ("display_name", "aliases", "placeholder_desc"), "interaction": ("label", "facts"),
-    "observation": ("source_spans", "content", "involved"), "followup": ("text",),
+    "observation": ("source_spans", "content", "involved", "summary"), "followup": ("text",),
 }
 
 
@@ -118,9 +118,16 @@ class Store:
                          self._e("draft", "proposed", did, proposed), status, confirmed_ref, now))
         self.db.commit()
 
-    def drafts(self, status: Optional[str] = None) -> list:
-        q = "SELECT * FROM draft" + (" WHERE status=?" if status else "") + " ORDER BY rowid"
-        return [self._row("draft", r) for r in self.db.execute(q, (status,) if status else ())]
+    def drafts(self, status: Optional[str] = None, conversation_id: Optional[str] = None) -> list:
+        q, args = "SELECT d.* FROM draft d JOIN message m ON d.message_id = m.id WHERE 1=1", []
+        if status:
+            q += " AND d.status=?"
+            args.append(status)
+        if conversation_id:
+            q += " AND m.conversation_id=?"
+            args.append(conversation_id)
+        # 按草稿编号排序：INSERT OR REPLACE 会改变 rowid，用 rowid 排序的话，确认过的草稿会跑到末尾
+        return [self._row("draft", r) for r in self.db.execute(q + " ORDER BY CAST(SUBSTR(d.id, 2) AS INTEGER)", args)]
 
     # —— 事实 ——
     def save_person(self, p: Person, aliases: tuple = ()) -> None:
@@ -131,6 +138,10 @@ class Store:
                          p.code, p.influence, p.quadrant_manual, p.quadrant_set_at, p.quadrant_auto))
         self.db.commit()
 
+    def load_aliases(self) -> dict:
+        """{人物 id: [别名...]}：登记人物时保存的别名，重新打开后恢复人名索引用。"""
+        return {r["id"]: self._d("person", "aliases", r["id"], r["aliases"]) for r in self.db.execute("SELECT id, aliases FROM person")}
+
     def save_interaction(self, iid: str, label: str, status: str, facts: dict) -> None:
         self.db.execute("INSERT OR REPLACE INTO interaction VALUES(?,?,?,?)",
                         (iid, self._e("interaction", "label", iid, label), status,
@@ -138,11 +149,12 @@ class Store:
         self.db.commit()
 
     def save_observation(self, o: Observation, spans: list, draft_id: Optional[str]) -> None:
-        self.db.execute("INSERT OR REPLACE INTO observation VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        self.db.execute("INSERT OR REPLACE INTO observation VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (o.id, o.interaction_id, self._e("observation", "source_spans", o.id, spans), o.kind,
                          o.reporter_id, o.subject_person_id, self._e("observation", "content", o.id, o.content),
                          int(o.is_interpretation), o.source_mode, int(o.prompted_by_model),
-                         self._e("observation", "involved", o.id, o.involved), draft_id, o.recorded_at))
+                         self._e("observation", "involved", o.id, o.involved), draft_id, o.recorded_at,
+                         self._e("observation", "summary", o.id, o.summary)))
         self.db.commit()
 
     def save_followup(self, f: Followup) -> None:
@@ -184,6 +196,9 @@ class Store:
                      p.influence, p.quadrant_manual, p.quadrant_set_at, p.quadrant_auto, p.id))  # 保留已存的别名
             else:
                 self.save_person(p)
+        for o in w.observations.values():  # 人物合并后观察改指真实人物，必须落库
+            self.db.execute("UPDATE observation SET reporter_id=?, subject_person_id=?, involved=? WHERE id=?",
+                            (o.reporter_id, o.subject_person_id, self._e("observation", "involved", o.id, o.involved), o.id))
         for f in w.followups:
             self.save_followup(f)
         for iid, meta in w.interactions.items():
@@ -231,7 +246,7 @@ class Store:
                                   d["reporter_id"], d["subject_person_id"], d["content"],
                                   is_interpretation=bool(d["is_interpretation"]), source_mode=d["source_mode"],
                                   prompted_by_model=bool(d["prompted_by_model"]), involved=tuple(d["involved"]))
-            o.id, o.recorded_at = d["id"], d["recorded_at"] or 0
+            o.id, o.recorded_at, o.summary = d["id"], d["recorded_at"] or 0, d["summary"] or ""
         for r in self.db.execute("SELECT * FROM followup"):
             d = self._row("followup", r)
             w.followups.append(Followup(d["id"], d["kind"], d["target_ref"], d["trigger_"], d["text"], d["status"]))

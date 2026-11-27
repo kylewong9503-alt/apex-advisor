@@ -170,10 +170,11 @@ def render_graph_browser(w: World, store=None, rd=None) -> str:
     rd = rd or Redactor(w, "plain")
     e = html.escape
     views = graph_views(w, rd)
-    tabs = "".join(f"<button class='tab' data-tab='{e(v['id'])}'>{e(v['title'])}</button>" for v in views)
+    ref = lambda v: "org" if v["id"] == "org" else rd.mref(v["id"])  # noqa: E731
+    tabs = "".join(f"<button class='tab' data-tab='{e(ref(v))}'>{e(v['title'])}</button>" for v in views)
     panels = [f"<section class='gpanel' data-sub='org'><h3>组织结构</h3><p class='mut'>{e(build_org_graph(w, rd)['scope'])}</p>"
               f"{render_org_svg(build_org_graph(w, rd))}{org_legend(build_org_graph(w, rd))}</section>"]
     for v in views[1:]:
         g = build_matter_graph(w, v["id"], store, rd)
-        panels.append(f"<section class='gpanel' data-sub='{e(v['id'])}'><h3>{e(g['matter'])}</h3>{render_svg(g)}</section>")
+        panels.append(f"<section class='gpanel' data-sub='{e(ref(v))}'><h3>{e(g['matter'])}</h3>{render_svg(g)}</section>")
     return f"<div data-no-capture='graph'><div class='tabs'>{tabs}</div>{''.join(panels)}</div>"

@@ -151,6 +151,7 @@ class Observation:
     prompted_by_model: bool = False
     involved: list = field(default_factory=list)
     recorded_at: int = 0
+    summary: str = ""  # 模型的概括：单独存放，不是证据（R3）；content 恒为用户原话片段
 
 
 @dataclass
@@ -493,7 +494,7 @@ class World:
     def add_observation(self, interaction_id: str, source_spans: tuple, kind: str, reporter_id: str,
                         subject_person_id: str, content: str, *, is_interpretation: bool = False,
                         source_mode: str = "contemporaneous", prompted_by_model: bool = False,
-                        involved: tuple = (), from_model: bool = False) -> Observation:
+                        involved: tuple = (), from_model: bool = False, summary: str = "") -> Observation:
         if from_model:  # R3：AI 生成内容不得成为观察
             raise WorldError("AI 生成内容不得作为观察入库；请存为 interpretation")
         if not source_spans:
@@ -504,7 +505,7 @@ class World:
             self.add_interaction(interaction_id, day=self.today_fn())  # 真实日期；合成数据显式传 day
         o = Observation(self._nid("O", self.observations), interaction_id, tuple(source_spans), kind, reporter_id,
                         subject_person_id, content, is_interpretation, source_mode, prompted_by_model, list(involved),
-                        self.now())
+                        self.now(), summary)
         self.observations[o.id] = o
         return o
 
@@ -535,7 +536,7 @@ class World:
 
     def correct_fact(self, opp_id: str, field_name: str, value: Any, **kw) -> Revision:
         """事实更正：引擎重算比较；统计层同步字段。"""
-        rev = self.engine.apply_correction(opp_id, field_name, value, **kw)
+        rev = self.engine.apply_correction(opp_id, field_name, value, **kw)  # kw 里必须带 preview_token
         s = self.stat_opps[opp_id]
         if field_name == "submitter":
             s.target_id = value

@@ -34,13 +34,13 @@ def calibration_panel(w: World, include_corrected: bool = False, rd: Optional[Re
     per_matter = []
     for mid in sorted({p.pre.matter_id for p in eng.preds.values()}):
         title = w.matters[mid].title if mid in w.matters else mid
-        per_matter.append({"matter_id": mid, "title": rd.m(title),
+        per_matter.append({"matter_id": rd.mref(mid), "title": rd.m(title),
                            "groups": {t: {**_group(g), "range": RANGE[t], "label": TYPE_LABEL[t]}
                                       for t, g in eng.calibration(include_corrected, matter_id=mid).items()}})
     rows = []
     for p in sorted(eng.preds.values(), key=lambda x: x.pre.locked_at):
         excluded = p.st.status == "settled" and p.st.lock_facts_corrected and not include_corrected
-        rows.append({"id": p.id, "person": rd.p(p.pre.person_id), "type": TYPE_LABEL[p.pre.outcome_type],
+        rows.append({"id": rd.pref(p.id), "person": rd.p(p.pre.person_id), "type": TYPE_LABEL[p.pre.outcome_type],
                      "status": p.st.status, "brier": p.st.brier, "baseline": p.st.brier_baseline,
                      "excluded": excluded})
     return {"groups": groups, "per_matter": per_matter, "rows": rows, "include_corrected": include_corrected,

@@ -68,6 +68,7 @@ def _plain_workbench(rd: Redactor) -> str:
 def render_app(w, store=None, *, mode: str = "code", prep=None, conversations: Optional[list] = None,
                toggle_href: str = "", title: str = "识人系统", auto_quadrants: bool = False) -> str:
     rd = Redactor(w, mode)
+    title = "识人系统" if rd.masked else title  # 页面标题常常带议题名：遮挡时不输出
     convs = conversations if conversations is not None else (store.conversations() if store is not None else [])
     # 工作台：最近的议题（没有议题时只有对话与输入框）
     if w.matters:

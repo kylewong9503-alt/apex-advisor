@@ -114,18 +114,17 @@ class RemoteModel:
     """
 
     DEFAULT_URL = "https://api.deepseek.com"
-    ALLOWED_HOSTS = ("api.deepseek.com",)
+    ALLOWED_HOSTS = ("api.deepseek.com",)  # 类常量：调用方不能通过构造参数放宽（测试可以子类覆盖）
+    REQUIRE_HTTPS = True
 
-    def __init__(self, model: str = "deepseek-chat", base_url: str = DEFAULT_URL, *, api_key: Optional[str] = None,
-                 timeout: float = 120.0, allowed_hosts: tuple = ALLOWED_HOSTS, require_https: bool = True,
-                 env: Optional[dict] = None) -> None:
-        env = os.environ if env is None else env
-        if env.get("PR_ALLOW_EXTERNAL") != "1":
+    def __init__(self, model: str = "deepseek-chat", base_url: str = DEFAULT_URL, timeout: float = 120.0) -> None:
+        # 开关与密钥只来自进程环境变量，不接受构造参数，避免调用方绕过用户的明确开启
+        if os.environ.get("PR_ALLOW_EXTERNAL") != "1":
             raise ExternalModelRefused("外部模型默认关闭。确认接受“原话会发送到外部服务”后，设置 PR_ALLOW_EXTERNAL=1")
         u = urlparse(base_url)
-        if u.hostname not in allowed_hosts or (require_https and u.scheme != "https"):
+        if u.hostname not in self.ALLOWED_HOSTS or (self.REQUIRE_HTTPS and u.scheme != "https"):
             raise ExternalModelRefused(f"主机 {u.hostname!r} 不在白名单，或不是 https")
-        self._key = (api_key or env.get("DEEPSEEK_API_KEY", "")).strip()
+        self._key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
         if not self._key:
             raise MissingApiKey("未设置 DEEPSEEK_API_KEY")
         if not (self._key.isascii() and self._key.isprintable() and " " not in self._key):
@@ -155,14 +154,13 @@ class RemoteModel:
     structured = LocalModel.structured
 
 
-def make_model(env: Optional[dict] = None):
-    """按 PR_PROVIDER 选择：local（默认）| deepseek。"""
-    env = os.environ if env is None else env
-    provider = env.get("PR_PROVIDER", "local")
+def make_model():
+    """按环境变量 PR_PROVIDER 选择：local（默认）| deepseek。"""
+    provider = os.environ.get("PR_PROVIDER", "local")
     if provider == "local":
-        return LocalModel(env.get("PR_MODEL_BASE_URL", DEFAULT_BASE_URL), env.get("PR_MODEL", DEFAULT_MODEL))
+        return LocalModel(os.environ.get("PR_MODEL_BASE_URL", DEFAULT_BASE_URL), os.environ.get("PR_MODEL", DEFAULT_MODEL))
     if provider == "deepseek":
-        return RemoteModel(env.get("PR_MODEL", "deepseek-chat"), env=env)
+        return RemoteModel(os.environ.get("PR_MODEL", "deepseek-chat"))
     raise ValueError("PR_PROVIDER 只能是 local 或 deepseek")
 
 

@@ -215,7 +215,7 @@ def test_c3_recalled_material_not_counted(tmp_path):
     assert (o.source_mode, o.prompted_by_model, o.interaction_id) == ("recalled", True, "PREV-F")
     assert res["linked_hypothesis"] == "H1" and w.recall_links == [(o.id, "H1")]
     c = judgment_card(w, "H1", st)
-    assert c["rows"][2]["text"] == "今天你回忆：上次他先问谁来管。它支持“先问职责”，未计入比较。"
+    assert c["rows"][2]["text"] == "今天你回忆：他先问的是谁来管。它支持“先问职责”，未计入比较。"  # 内容是原话，不是模型的概括
     assert c["badge"] == "关联 1 次互动 · 其中 1 次为事后回忆" and c["rows"][1]["text"] == "尚无事前预测" or c["rows"][1]["text"] == "已形成规则，等待结果"
     assert not w.engine.rows  # 不产生 pair_evidence
     rv = pm.revise_after_fork(res["branch"], C3_TEXT)

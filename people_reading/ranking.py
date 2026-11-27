@@ -94,10 +94,15 @@ def rank_scenes(scenes: list, rules: list, threshold: float = 0.3, what: Optiona
         entries.append({"name": sc.name, "facts": sc.facts, "kind": {"observe": "观察信号", "ask": "当面询问"}.get(sc.kind),
                         "cost": 0 if sc.kind == "observe" else sc.cost, "power": power, "score": score, "status": status,
                         "separates": (a.name, b.name), "text": _text(sc, a, b, power, d, what)})
+    return order_entries(entries)
+
+
+def order_entries(entries: list) -> list:
+    """3.9：零代价（观察信号）按区分力 → 正代价（当面询问）按区分力÷代价 → 没评估代价的。"""
     zero = sorted([e for e in entries if e["status"] == "ranked" and e["kind"] == "观察信号"], key=lambda e: (-e["power"], e["name"]))
     pos = sorted([e for e in entries if e["status"] == "ranked" and e["kind"] == "当面询问"], key=lambda e: (-e["score"], e["name"]))
     unrated = sorted([e for e in entries if e["status"] == "unrated"], key=lambda e: (-e["power"], e["name"]))
-    return zero + pos + unrated  # 零代价 → 正代价 → 待评估
+    return zero + pos + unrated
 
 
 # ───────── 与 World 对接 ─────────
@@ -111,15 +116,23 @@ def person_rules(w: World, pid: str) -> list:
 
 
 def discriminating_signals(w: World, pid: str, threshold: float = 0.3) -> list:
-    """该人物当前规则之间，下一步最值得观察的场景（已按 3.9 排序，含看到什么/能分清什么）。"""
-    rules = [r for r in person_rules(w, pid) if r.spec is not None]
-    if len(rules) < 2:
-        return []
-    scenes = generate_scenes(rules)
-    for sc in scenes:
-        rating = w.scene_ratings.get((pid, sc.name))
-        if rating:
-            sc.kind, sc.cost = rating
-    versions = [v for (k, v) in w.engine.behaviors if k == rules[0].behavior_key]
-    beh = w.engine.behaviors[(rules[0].behavior_key, max(versions))] if versions else None
-    return rank_scenes(scenes, rules, threshold, what=beh.description if beh and beh.outcome_type == "binary" else None)
+    """该人物当前规则之间，下一步最值得观察的场景（按 3.9 排序，含看到什么/能分清什么）。
+    规则只在同一个行为内两两比较（二元与多类别的概率不能互比）；各行为的结果合在一起统一排序。"""
+    groups: dict = {}
+    for r in person_rules(w, pid):
+        if r.spec is not None:
+            groups.setdefault(r.behavior_key, []).append(r)
+    entries: list = []
+    for bk, rules in groups.items():
+        if len(rules) < 2:
+            continue
+        scenes = generate_scenes(rules)
+        for sc in scenes:
+            rating = w.scene_ratings.get((pid, sc.name))
+            if rating:
+                sc.kind, sc.cost = rating
+        versions = [v for (k, v) in w.engine.behaviors if k == bk]
+        beh = w.engine.behaviors[(bk, max(versions))] if versions else None
+        entries += rank_scenes(scenes, rules, threshold,
+                               what=beh.description if beh and beh.outcome_type == "binary" else None)
+    return order_entries(entries)

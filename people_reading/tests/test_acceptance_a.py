@@ -57,7 +57,7 @@ def test_a4_dimensions_after_e4():
 
 def test_a5_6_dimension_after_correction():
     w = S.build_world_a()
-    w.correct_fact("E4", "submitter", "user", confirmed_by_user=True, source_spans=("E4 其实是我提交的",))
+    S.correct(w, "E4", "submitter", "user", source_spans=("E4 其实是我提交的",))
     a = dim_a(w, "X")
     assert (a["me"]["text"], a["peers"]["text"], a["state"]) == ("5/7", "1/2", "待区分")
 
@@ -68,7 +68,7 @@ def test_a5_6_interpretation_marked_changed():
                                 cited_pairs=(("E4", "H_A", "H_C"),), open_questions=("同级一侧样本不足",))
     other = w.save_interpretation("E2 的情况", "…", cited_opps=("E2",), cited_pairs=(("E2", "H_A", "H_C"),))
     assert not w.interpretation_changed(iid)
-    w.correct_fact("E4", "submitter", "user", confirmed_by_user=True)
+    S.correct(w, "E4", "submitter", "user")
     assert w.interpretation_changed(iid) and not w.interpretation_changed(other)
 
 

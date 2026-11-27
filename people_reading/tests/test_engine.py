@@ -136,7 +136,7 @@ def test_a5_6_fact_correction():
     assert e.cumulative("H_A", "H_C")["multiple"] == 16.0  # 预览不写入
     with pytest.raises(UnconfirmedCorrection):
         e.apply_correction("E4", "submitter", "user", confirmed_by_user=False)
-    e.apply_correction("E4", "submitter", "user", confirmed_by_user=True, source_spans=("E4 其实是我提交的",))
+    S.correct(e, "E4", "submitter", "user", source_spans=("E4 其实是我提交的",))
     r = {k[2:]: (v.status, v.lr) for k, v in e.rows.items() if k[0] == "E4"}
     assert r[("H_A", "H_B")] == ("counted", 4.0)
     assert r[("H_A", "H_C")][0] == "below_threshold"

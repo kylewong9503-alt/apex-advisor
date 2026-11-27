@@ -134,8 +134,10 @@ def main(argv=None) -> int:
     ap.add_argument("--bar", type=float, default=0.9)
     a = ap.parse_args(argv)
     if a.provider == "deepseek":
-        model = make_model({**__import__("os").environ, "PR_PROVIDER": "deepseek",
-                                                       "PR_MODEL": "deepseek-chat" if a.model == DEFAULT_MODEL else a.model})
+        import os
+        os.environ["PR_PROVIDER"] = "deepseek"
+        os.environ["PR_MODEL"] = "deepseek-chat" if a.model == DEFAULT_MODEL else a.model
+        model = make_model()
     else:
         model = LocalModel(a.base_url, a.model)  # 非本机地址在这里就会被拒绝
     rec = Recorder(model)

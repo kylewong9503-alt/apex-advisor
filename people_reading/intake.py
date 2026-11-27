@@ -52,12 +52,24 @@ class Intake:
         self._seq = 0
 
     def adopt_world(self) -> None:
-        """从已有 World 恢复人名索引（重新打开应用后调用）。"""
+        """从已有 World 与库里保存的别名恢复人名索引（重新打开应用后调用）。
+        已合并的占位人物，其名字和别名都指向合并后的真实人物。"""
+        saved = self.store.load_aliases()
+
+        def final(pid: str) -> str:
+            seen = set()
+            while self.world.persons[pid].merged_into_id and pid not in seen:
+                seen.add(pid)
+                pid = self.world.persons[pid].merged_into_id
+            return pid
         for p in self.world.persons.values():
-            if not p.is_self and p.merged_into_id is None:
-                self.aliases.setdefault(p.display_name, [])
-                if p.id not in self.aliases[p.display_name]:
-                    self.aliases[p.display_name].append(p.id)
+            if p.is_self:
+                continue
+            target = final(p.id)
+            for n in {p.display_name, *saved.get(p.id, [])}:
+                lst = self.aliases.setdefault(n, [])
+                if target not in lst:
+                    lst.append(target)
 
     # —— 人物 ——
     def register_person(self, p: Person, aliases: tuple = ()) -> None:
@@ -184,7 +196,11 @@ class Intake:
             if iid is None:
                 self._seq += 1
                 iid = f"INT-{cid}-{self._seq}"
-            self._merge_facts(iid, data["interaction"])
+            conflicts = self._merge_facts(iid, data["interaction"])
+            if conflicts and not ask:
+                k, old, new_ = conflicts[0]
+                label = {"cross_dept": "是否跨部门", "submitter": "提交人", "responsible_named": "是否写明负责人"}[k]
+                ask = f"之前记录的{label}是“{self._fact_text(old)}”，这次提到的是“{self._fact_text(new_)}”。要更正吗？"
         if iid:
             self.last_iid[cid] = iid
         q = ask or data.get("clarifying_question")
@@ -222,17 +238,38 @@ class Intake:
         self.store.save_draft(did, mid, [{"message_id": mid, "start": span[0], "end": span[1]}], body, now=self.clock())
         return did
 
-    def _merge_facts(self, iid: str, new: dict) -> None:
-        cur = self.facts.setdefault(iid, {"cross_dept": None, "submitter": None, "responsible_named": None})
+    def _facts_for(self, iid: str) -> dict:
+        """该互动已知的事实。重新打开后 self.facts 是空的，从已有的机会里还原。"""
+        if iid not in self.facts:
+            s = self.world.stat_opps.get(f"OPP-{iid}")
+            self.facts[iid] = ({"cross_dept": s.cross_dept, "submitter": s.target_id, "responsible_named": s.responsible_named}
+                               if s else {"cross_dept": None, "submitter": None, "responsible_named": None})
+        return self.facts[iid]
+
+    def _fact_text(self, v) -> str:
+        if v is True:
+            return "是"
+        if v is False:
+            return "否"
+        return "我" if v == SELF else (self.world.persons[v].display_name if v in self.world.persons else str(v))
+
+    def _merge_facts(self, iid: str, new: dict) -> list:
+        """只补全未知。已知的事实不会被模型改写：冲突的字段原样保留，并返回给调用方去问用户（走更正流程）。"""
+        cur = self._facts_for(iid)
+        conflicts = []
         for k, v in new.items():
             if v is None:
                 continue
             if k == "submitter":
                 kind, pid = self.resolve(v)
                 v = pid if kind in ("self", "one") else v  # 未解析的名字保留原文，不猜
-            cur[k] = v
+            if cur[k] is None:
+                cur[k] = v
+            elif cur[k] != v:
+                conflicts.append((k, cur[k], v))
         self.store.save_interaction(iid, iid, "occurred", cur)
         self._sync_opportunity(iid)
+        return conflicts
 
     def _sync_opportunity(self, iid: str) -> None:
         oid, f = f"OPP-{iid}", self.facts[iid]
@@ -241,7 +278,8 @@ class Intake:
             return
         s.cross_dept, s.target_id, s.responsible_named = f["cross_dept"], f["submitter"], f["responsible_named"]
         self.world.engine.opps[oid].facts.update(cross_dept=f["cross_dept"], submitter=f["submitter"],
-                                                 responsible_named=f["responsible_named"])  # 补全未知，不是更正
+                                                 responsible_named=f["responsible_named"])  # 只补全未知，不是更正
+        self.world.engine.recompute(oid, "补全未知事实")
         if f["responsible_named"] is not None:
             for fu in self.world.followups:
                 if fu.target_ref == oid and fu.status == "open":
@@ -282,10 +320,14 @@ class Intake:
                     b[f"{side}_id"] = pid if kind in ("self", "one") else None
         rep, sub = self._person_for(b["reporter_name"], b["reporter_id"]), self._person_for(b["subject_name"], b["subject_id"])
         iid = b["interaction_id"]
-        self.facts.setdefault(iid, {"cross_dept": None, "submitter": None, "responsible_named": None})
-        o = self.world.add_observation(iid, tuple(d["source_spans"]), b["kind"], rep, sub, b["content"],
+        self._facts_for(iid)
+        # R3：观察的内容就是用户的原话片段（程序按偏移取出）。模型写的概括单独放在 summary，不是证据；
+        # 只有用户在确认时亲手改写（edits["content"]），才以用户写的为准。
+        quote = " … ".join(self.store.quote(sp) for sp in d["source_spans"])
+        o = self.world.add_observation(iid, tuple(d["source_spans"]), b["kind"], rep, sub, (edits or {}).get("content") or quote,
                                        is_interpretation=b["is_interpretation"], source_mode=b["source_mode"],
-                                       prompted_by_model=b.get("prompted_by_model", False))
+                                       prompted_by_model=b.get("prompted_by_model", False),
+                                       summary=d["proposed"].get("content", ""))
         self.store.save_observation(o, d["source_spans"], did)
         if b.get("behavior_key") and b.get("occurred") is not None:
             self._ensure_opportunity(iid, sub, b["behavior_key"], b["occurred"])
@@ -313,13 +355,15 @@ class Intake:
         if tt == "commitment":
             frm = self._person_for(b["from_name"], b["from_id"])
             to = self._person_for(b["to_name"], b["to_id"])
-            o = w.add_observation(iid, tuple(spans), "behavior", SELF, frm, f"承诺：{b['content']}")
+            quote = " … ".join(self.store.quote(sp) for sp in spans)
+            o = w.add_observation(iid, tuple(spans), "behavior", SELF, frm, quote, summary=f"承诺：{b['content']}")
             self.store.save_observation(o, spans, None)
             return w.add_commitment(frm, to, b["content"], evidence_obs_id=o.id, due_at=b.get("due_at"),
                                     due_text=b.get("due_text", "")).id
         c = w.commitments[b["commitment_id"]]
         word = "兑现" if b["status"] == "fulfilled" else "未兑现"
-        o = w.add_observation(iid, tuple(spans), "behavior", SELF, c.from_person_id, f"{word}：{c.content}")
+        quote = " … ".join(self.store.quote(sp) for sp in spans)
+        o = w.add_observation(iid, tuple(spans), "behavior", SELF, c.from_person_id, quote, summary=f"{word}：{c.content}")
         self.store.save_observation(o, spans, None)
         w.close_commitment(c.id, b["status"], closing_obs_id=o.id)
         return c.id
@@ -357,7 +401,7 @@ class Intake:
         oid = f"OPP-{iid}"
         if oid in self.world.stat_opps:
             return
-        f = self.facts[iid]
+        f = self._facts_for(iid)
         before = len(self.world.followups)
         self.world.add_opportunity(oid, actor=actor, target=f["submitter"], cross_dept=f["cross_dept"],
                                    responsible_named=f["responsible_named"], occurred=occurred,
@@ -366,7 +410,8 @@ class Intake:
             self.store.save_followup(fu)
 
     def confirm_all(self, cid: Optional[str] = None) -> list:
-        return [self.confirm(d["id"]) for d in self.store.drafts("pending")]
+        """一次确认。给了 cid 就只确认这个对话里的待确认草稿；不给才是全部。"""
+        return [self.confirm(d["id"]) for d in self.store.drafts("pending", cid)]
 
     def reject(self, did: str) -> None:
         d = next(x for x in self.store.drafts() if x["id"] == did)

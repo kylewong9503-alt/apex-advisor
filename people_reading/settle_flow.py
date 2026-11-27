@@ -15,7 +15,8 @@ from .cards import settlement_screen
 from .engine import EngineError, Premise
 from .intake import Intake, find_span
 from .judgment import judgment_card
-from .world import Followup, MatterRole
+from .engine import _same
+from .world import Followup, MatterRole, classify_source_mode
 
 AFTER_MARKER = re.compile(r"后来|之后才|才拿出|才讲|才展示|才说")
 DEFAULT_CHOICES = (("成立", "holds"), ("不成立", "violated"), ("记不清", "unclear"))
@@ -56,7 +57,11 @@ SYSTEM_PROPOSE = """你在帮用户按事前写好的标准判断会谈的实际
 
 
 class SettlementSession:
-    def __init__(self, intake: Intake, matter_id: str, interaction_id: str, model=None, meeting_time: str = "") -> None:
+    def __init__(self, intake: Intake, matter_id: str, interaction_id: str, model=None, meeting_time: str = "",
+                 behavior_key: Optional[str] = None) -> None:
+        """behavior_key：同一场会对同一机会有多种行为的预测时，必须指明这次按哪种行为结算。"""
+        self.behavior_key = behavior_key
+        self.report_mode = "contemporaneous"
         self.intake, self.w = intake, intake.world
         self.matter_id, self.iid, self.model, self.meeting_time = matter_id, interaction_id, model, meeting_time
         self.state = "awaiting_report"
@@ -79,9 +84,11 @@ class SettlementSession:
         for p in self.eng.preds.values():
             if p.st.status != "locked":
                 continue
+            if self.behavior_key is not None and p.pre.behavior_key != self.behavior_key:
+                continue
             if p.pre.bind_mode == "specific_item" and p.pre.bound_opportunity_id == self.iid:
                 out.append(p)
-            elif p.pre.bind_mode == "condition_match" and all(opp.facts.get(k) == v for k, v in p.pre.conditions):
+            elif p.pre.bind_mode == "condition_match" and all(_same(opp.facts.get(k), v) for k, v in p.pre.conditions):
                 out.append(p)
         return out
 
@@ -93,9 +100,11 @@ class SettlementSession:
 
     # —— 2/3. 首份报告 ——
     def submit_report(self, cid: str, text: str, *, hours_since_event: float = 0):
+        self._behavior_for()  # 先检查：多种行为又没指明 behavior_key 时在这里就报错，不保存任何东西
         reply = self.intake.handle(cid, text, hours_since_event=hours_since_event, prompt_kind="settlement_reminder",
                                    interaction_id=self.iid)
         self.report_mid, self.report_text, self.report_drafts = reply.message_id, text, list(reply.draft_ids)
+        self.report_mode, _ = classify_source_mode(hours_since_event, prompt_kind="settlement_reminder")  # 2.5：超过 48 小时 = 事后回忆
         self.w.interactions[self.iid]["status"] = "occurred"
         self.state = "premise_check"
         self._hidden_proposal()  # 先在后台对照标准；展示要等前提核对之后
@@ -108,36 +117,48 @@ class SettlementSession:
     def premise_questions(self) -> list:
         """结算卡必须先问：只有 prepared_items 而 execution_log 为空时，不得默认前提成立。"""
         qs, seen = [], set()
+        ident = lambda pr: (pr.text, pr.anchor_event, pr.cutoff)  # noqa: E731  措辞、标志事件、截止点都相同才算同一个前提
         for p in self.matched():
             for pr in p.pre.premises:
-                if pr.text in seen:
-                    continue  # 文字相同的前提只问一次，答案各预测共用，但各自核对自己的前提
-                seen.add(pr.text)
+                if ident(pr) in seen:
+                    continue  # 完全相同的前提只问一次；截止点不同的是不同的前提，要分别问
+                seen.add(ident(pr))
                 q = pr.cutoff_question if (self._anchor_occurred() is False and pr.cutoff_question) else \
                     (pr.question or f"关于“{pr.text}”，实际情况是？")
-                qs.append({"premise_id": pr.id, "premise_text": pr.text, "question": q,
+                qs.append({"premise_id": pr.id, "premise_text": pr.text, "cutoff": pr.cutoff, "question": q,
                            "options": [c[0] for c in (pr.choices or DEFAULT_CHOICES)],
-                           "prediction_ids": [x.id for x in self.matched() if any(y.text == pr.text for y in x.pre.premises)]})
+                           "prediction_ids": [x.id for x in self.matched() if any(ident(y) == ident(pr) for y in x.pre.premises)]})
         return qs
 
-    def answer_premise(self, premise_text: str, choice: str, supplement: str = "") -> None:
+    def answer_premise(self, premise_text: str, choice: str, supplement: str = "", *, cutoff: Optional[str] = None) -> None:
+        """回答一个前提。措辞相同但截止点不同的前提是不同的前提：必须用 cutoff 指明是哪一个。"""
+        cands = {(pr.text, pr.anchor_event, pr.cutoff) for p in self.matched() for pr in p.pre.premises if pr.text == premise_text}
+        if cutoff is not None:
+            cands = {c for c in cands if c[2] == cutoff}
+        if len(cands) > 1:
+            raise EngineError(f"前提“{premise_text}”有多个不同的截止点 {sorted(c[2] for c in cands)}，请用 cutoff 指明回答的是哪一个")
+        if not cands:
+            raise EngineError("没有匹配的前提")
+        target = next(iter(cands))
+        picked = None
         for p in self.matched():
             for pr in p.pre.premises:
-                if pr.text == premise_text:
+                if (pr.text, pr.anchor_event, pr.cutoff) == target:
                     mapping = dict(pr.choices or DEFAULT_CHOICES)
                     if choice not in mapping:
                         raise EngineError(f"选项 {choice!r} 不在该前提的选项里")
                     self.answers[(p.id, pr.id)] = (mapping[choice], choice + (f"；{supplement}" if supplement else ""),
                                                   choice, supplement)
-        self._log_execution(premise_text, choice, supplement)
+                    picked = pr
+        self._log_execution(picked, choice, supplement)
 
-    def _log_execution(self, premise_text: str, choice: str, supplement: str) -> None:
+    def _log_execution(self, pr: Premise, choice: str, supplement: str) -> None:
         """execution_log 只按用户实际说过的内容写：只选“都没有”→ not_before_marker；
         只有明确补充“后来才拿出/后来讲了”才写 after_marker；不据“都没有”推断材料后来是否用过。"""
         itv = next((i for i in self.w.interventions.values() if i.interaction_id == self.iid), None)
         if itv is None:
             return
-        pr = next(pr for p in self.matched() for pr in p.pre.premises if pr.text == premise_text)
+        premise_text = f"{pr.text}｜{pr.cutoff}"  # 同一措辞、不同截止点的前提分别记
         marker = pr.anchor_event or pr.cutoff
         status = dict(pr.choices or DEFAULT_CHOICES)[choice]
         named = [i for i in itv.prepared_items if i in supplement]
@@ -160,6 +181,9 @@ class SettlementSession:
             ps = self.matched()
             if not ps:
                 raise EngineError("没有可结算的预测")
+            kinds = {(x.pre.behavior_key, x.pre.def_version) for x in ps}
+            if len(kinds) > 1:  # 一次只确认一种行为的结果，否则会结算一半
+                raise EngineError(f"这个机会有多种行为的预测 {sorted(k[0] for k in kinds)}；请用 behavior_key 指明按哪一种行为结算")
             p = ps[0]
             self._beh = (self.eng.behaviors[(p.pre.behavior_key, p.pre.def_version)], p.pre)
         return self._beh
@@ -200,9 +224,11 @@ class SettlementSession:
     def confirm_outcome(self, outcome=None, *, unobservable: bool = False) -> dict:
         beh, _ = self._behavior_for()
         if self.eng.needs_outcome_confirmation(self.iid, beh.key, beh.version):
-            obs_modes = {self.w.observations[k].source_mode for k in self.w.observations
-                         if self.w.observations[k].interaction_id == self.iid}
-            recalled_only = bool(obs_modes) and obs_modes == {"recalled"}
+            # R10：结果是否“仅由回忆材料支撑”，看首份报告本身的时间（2.5：事件后超过 48 小时才报告 = 回忆），
+            # 而不是看此刻库里有哪些观察（草稿未确认、手动结算时观察集合是空的）；
+            # 同一场会已有“当时记录”的观察时，结果有当时的证据，不算仅回忆。
+            earlier = any(o.interaction_id == self.iid and o.source_mode == "contemporaneous" for o in self.w.observations.values())
+            recalled_only = self.report_mode == "recalled" and not earlier
             spans = (self.proposal["span"],) if self.proposal and self.proposal.get("span") else \
                 ({"message_id": self.report_mid, "start": 0, "end": len(self.report_text)},)
             chosen = outcome if outcome is not None else (self.proposal or {}).get("outcome")

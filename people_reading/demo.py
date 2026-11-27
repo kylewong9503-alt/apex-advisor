@@ -74,7 +74,7 @@ def example_two():
     out["detail_before"] = prediction_row(e, "E4", "H_A", "H_C") if e.rows[("E4", "ask_owner", "H_A", "H_C")].status == "counted" else ""
     lock_p_before = {r: e.preds["P-2"].rule_snaps[r].value for r in ("H_A", "H_B", "H_C")}
     out["preview"] = e.correction_preview("E4", "submitter", "user")
-    e.apply_correction("E4", "submitter", "user", confirmed_by_user=True, source_spans=("E4 其实是我提交的",),
+    S.correct(e, "E4", "submitter", "user", source_spans=("E4 其实是我提交的",),
                        reason="用户更正：E4 其实是我提交的")
     out.update(after_pairs=pair_rows(e, "E4"), after_cum={n: e.cumulative(a, b) for n, (a, b) in CUM.items()},
                after_cal=e.calibration(), detail=e.comparison_detail("E4", "H_A", "H_C"),

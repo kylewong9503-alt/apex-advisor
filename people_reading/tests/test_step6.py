@@ -146,7 +146,7 @@ def test_depth_components():
             o.source_mode = "recalled"
     assert depth(w, "X")["effective_evidence"] == 6.5  # E4 那次互动只算半份（1+1+0.5+4 条比较；此处没重算比较行）
     w2 = S.build_world_a()
-    w2.correct_fact("E4", "submitter", "user", confirmed_by_user=True)
+    S.correct(w2, "E4", "submitter", "user")
     assert depth(w2, "X")["n_settled"] == 1  # 因更正而重算的预测不计入表现
 
 
@@ -358,7 +358,8 @@ def test_intake_commitments_are_drafts_then_ledger_with_quotes(tmp_path):
     c1 = w.commitments[ids[0]]
     assert (c1.from_person_id, c1.to_person_id, c1.content, c1.due_text) == ("F", SELF, "把名单发我", "下周五前")
     ob = next(o for o in w.observations.values() if o.id == c1.evidence_obs_id)
-    assert ob.content == "承诺：把名单发我" and st.quote(ob.source_spans[0]) == "F 答应下周五前把名单发我"  # 点回原话
+    assert ob.content == "F 答应下周五前把名单发我" and ob.summary == "承诺：把名单发我"  # 内容是原话，模型的概括单独放
+    assert st.quote(ob.source_spans[0]) == "F 答应下周五前把名单发我"  # 点回原话
     assert len([f for f in w.followups if f.kind == "watch"]) == 2
 
 
@@ -382,7 +383,8 @@ def test_intake_update_closes_only_listed_open_commitments(tmp_path):
     c = w.commitments["C1"]
     assert c.status == "fulfilled"
     closing = next(o for o in w.observations.values() if o.id == c.closing_obs_id)
-    assert closing.content == "兑现：把名单发我" and st.quote(closing.source_spans[0]) == "F 把名单发过来了"
+    assert closing.content == "F 把名单发过来了" and closing.summary == "兑现：把名单发我"
+    assert st.quote(closing.source_spans[0]) == "F 把名单发过来了"
     again = extraction(commitment_updates=[{"id": "C1", "status": "broken", "source_quote": "F 把名单发过来了"}])
     it.model.outputs.append(again)
     assert it.handle("c1", "F 把名单发过来了").dropped == 1  # 已关闭的不能再改

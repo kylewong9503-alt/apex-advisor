@@ -245,6 +245,6 @@ def test_profile_three_layers_for_cfo():
 def test_profile_marks_stale_interpretation(tmp_path):
     w, st, it, a = make(tmp_path)
     res = run_competing_explanation(w, "X", "q", store=st)
-    w.correct_fact("E2", "submitter", "user", confirmed_by_user=True)
+    S.correct(w, "E2", "submitter", "user")
     pf = build_profile(w, "X", st)
     assert pf["interpretations"][0]["stale"] and "依据已变化" in render_html(pf)

@@ -37,6 +37,8 @@ class Redactor:
                      for i, pid in enumerate(sorted(p for p in w.persons if p != SELF))}
         names = sorted(((p.display_name, p.shown_code) for p in w.persons.values()
                         if p.id != SELF and p.display_name and p.display_name != p.shown_code), key=lambda x: -len(x[0]))
+        self._mord = {m: i + 1 for i, m in enumerate(sorted(w.matters))}
+        self._pord = {m: i + 1 for i, m in enumerate(sorted(w.engine.preds))}
         self._pat = re.compile("|".join(re.escape(n) for n, _ in names)) if names else None
         self._to_code = dict(names)
 
@@ -60,6 +62,14 @@ class Redactor:
     def ref(self, pid: str) -> str:
         """写进 URL / data 属性的人物引用。遮挡时用不透明引用，避免 ID（常常就是代号）泄漏进 DOM。"""
         return f"p{self._ord.get(pid, '')}" if self.mode == "masked" else pid
+
+    def mref(self, matter_id: str) -> str:
+        """议题 ID（常常就是议题名）。遮挡时用不透明引用。"""
+        return f"mx{self._mord.get(matter_id, 0)}" if self.mode == "masked" else matter_id
+
+    def pref(self, prediction_id: str) -> str:
+        """预测 ID。遮挡时用不透明引用。"""
+        return f"px{self._pord.get(prediction_id, 0)}" if self.mode == "masked" else prediction_id
 
     def t(self, s: str) -> str:
         """自由文本（判断内容、原话预览、角色表述、议题标题、关系标签……）。"""

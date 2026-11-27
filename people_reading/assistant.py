@@ -163,7 +163,8 @@ class Assistant:
     def confirm_correction(self, cid: str, preview_id: str) -> AReply:
         p = self.previews.pop(preview_id)
         self.w.correct_fact(p["opp"], p["field"], p["value"], confirmed_by_user=True,
-                            source_spans=({"message_id": p["message_id"]},), reason="用户更正")
+                            source_spans=({"message_id": p["message_id"]},), reason="用户更正",
+                            preview_token=p["preview"]["token"])
         self.intake.store.sync_world(self.w)
         changed = [i for i in p["preview"]["interpretations"] if self.w.interpretation_changed(i)]
         msg = f"已更正 {p['opp']} 的提交人，并重算。" + (f"依据已变化的解读：{'、'.join(changed)}。" if changed else "")

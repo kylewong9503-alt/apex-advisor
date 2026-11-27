@@ -162,3 +162,11 @@ def build_world_b() -> World:
     w.add_unit_link("STRAT", "CEO", "support")
     w.add_edge(SELF, "M", "structural", "direct_report")
     return w
+
+
+def correct(w, opp_id: str, field: str, value, **kw):
+    """事实更正：先预览（拿到令牌），再确认写入。w 可以是 World 或 Engine。"""
+    eng = getattr(w, "engine", w)
+    token = eng.correction_preview(opp_id, field, value)["token"]
+    fn = w.correct_fact if hasattr(w, "correct_fact") else w.apply_correction
+    return fn(opp_id, field, value, confirmed_by_user=True, preview_token=token, **kw)

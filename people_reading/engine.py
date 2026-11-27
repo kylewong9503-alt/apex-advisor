@@ -92,8 +92,8 @@ class Rule:
         if value is None:
             return None
         if outcome_type == "binary":
-            return round(value if outcome else 1 - value, 10)
-        return round(value[outcome], 10)
+            return _rnd(value if outcome else 1 - value)
+        return _rnd(value[outcome])
 
     def p_of(self, facts: dict, outcome: Any) -> Optional[float]:
         return self.p_from_value(self.outcome_type, self.value(facts), outcome)
@@ -101,16 +101,19 @@ class Rule:
 
 def _fn_from_spec(spec: dict) -> Callable[[dict], Any]:
     k = spec["kind"]
+    spec = copy.deepcopy(spec)  # 闭包持有自己的拷贝
     if k == "const_binary":
-        return lambda f: spec["p"]
+        p = spec["p"]
+        return lambda f: p
     if k == "const_dist":
-        return lambda f: dict(spec["dist"])
+        dist = dict(spec["dist"])
+        return lambda f: dict(dist)
     if k == "fact_binary":  # 事实 key 未知 → None（不可求值）
         def fn(f):
             v = f.get(spec["key"])
             if v is None:
                 return None
-            hit = (v is True) if spec["test"] == "is_true" else (v == spec["equals"])
+            hit = (v is True) if spec["test"] == "is_true" else _same(v, spec["equals"])
             return spec["p_if"] if hit else spec["p_else"]
         return fn
     raise EngineError(f"未知规则类型 {k}")
@@ -119,7 +122,25 @@ def _fn_from_spec(spec: dict) -> Callable[[dict], Any]:
 def make_rule(id: str, name: str, behavior_key: str, spec: dict, definition: str = "") -> Rule:
     """由声明式 spec 构造规则；outcome_type 由 spec 推出。"""
     ot = "categorical" if spec["kind"] == "const_dist" else "binary"
+    if spec["kind"] == "const_binary":
+        _check_prob(spec["p"], "规则概率 p")
+    elif spec["kind"] == "const_dist":
+        for k, v in spec["dist"].items():
+            _check_prob(v, f"规则类别“{k}”的概率")
+        if abs(sum(spec["dist"].values()) - 1) > 1e-6:
+            raise EngineError("规则的类别概率之和必须为 1")
+    elif spec["kind"] == "fact_binary":
+        _check_prob(spec["p_if"], "规则概率 p_if")
+        _check_prob(spec["p_else"], "规则概率 p_else")
+    spec = copy.deepcopy(spec)  # 规则自己持有一份，调用方之后再改原字典不影响
     return Rule(id, name, behavior_key, ot, definition or _canon(spec), _fn_from_spec(spec), spec)
+
+
+def _freeze_rule(r: "Rule") -> "Rule":
+    """锁定时冻结一份规则：声明式规则深拷贝后重建；只有函数的规则（测试用）无法拷贝，原样保留。"""
+    if r.spec is None:
+        return r
+    return make_rule(r.id, r.name, r.behavior_key, r.spec, r.definition)
 
 
 @dataclass(frozen=True)
@@ -209,6 +230,7 @@ class Prediction:
     pre: PreContent
     st: Settlement = field(default_factory=Settlement)
     rule_snaps: dict = field(default_factory=dict)  # prediction_rule：rule_id → RuleSnap
+    frozen_rules: dict = field(default_factory=dict)  # 锁定时冻结的规则定义；结算与更正一律用它，不看后来的 engine.rules
 
     @property
     def id(self) -> str:
@@ -257,6 +279,22 @@ class Revision:
     confirmed_by_user: bool = True
 
 
+def _rnd(x: float) -> float:
+    """相对精度舍入（12 位有效数字）：消除浮点噪声，但不会把 1e-10 这样的极小正数舍成 0。"""
+    return float(f"{x:.12g}")
+
+
+def _same(a: Any, b: Any) -> bool:
+    """按规范 JSON 形式比较：元组与列表、保存前与 JSON 往返后视为同一个值。"""
+    return _canon(a) == _canon(b)
+
+
+def _check_prob(x: Any, what: str, exc=None) -> None:
+    exc = exc or EngineError
+    if not isinstance(x, (int, float)) or isinstance(x, bool) or not (0 <= x <= 1):
+        raise exc(f"{what} 必须在 0–1 之间，收到 {x!r}")
+
+
 def _canon(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, default=list)
 
@@ -274,6 +312,7 @@ class Engine:
         self.rows: dict[tuple, PairRow] = {}
         self.revisions: list[Revision] = []
         self._cx: dict[tuple, bool] = {}
+        self._previews: set = set()  # 已生成、尚未使用的更正预览令牌（临时，不持久化）
         self.outcome_questions_asked = 0  # 测试用：统计向用户询问结果的次数
 
     # —— 基础 ——
@@ -297,6 +336,10 @@ class Engine:
         return b
 
     def add_rule(self, r: Rule) -> Rule:
+        old = self.rules.get(r.id)
+        if old is not None and (old.definition != r.definition or not _same(old.spec, r.spec)):
+            if any(r.id in p.frozen_rules for p in self.preds.values()):
+                raise EngineError(f"规则 {r.id} 已被预测冻结，不能改写；请新建一条规则")
         self.rules[r.id] = r
         return r
 
@@ -357,6 +400,8 @@ class Engine:
         if b.outcome_type == "binary":
             if prob is None or not (0 <= prob <= 1):
                 raise LockRejected("binary 需要 0–1 的 prob")
+            if baseline_prob is not None:
+                _check_prob(baseline_prob, "baseline_prob", LockRejected)
             if not settlement_criterion:
                 raise LockRejected("binary 预测必须写结算标准")
             bprob = 0.5 if baseline_prob is None else baseline_prob
@@ -368,25 +413,37 @@ class Engine:
         else:
             if prob_dist is None or set(prob_dist) != set(b.categories) or abs(sum(prob_dist.values()) - 1) > 1e-6:
                 raise LockRejected("categorical 需要覆盖全部类别且和为 1 的 prob_dist")
+            for c_, v_ in prob_dist.items():
+                _check_prob(v_, f"prob_dist[{c_}]", LockRejected)
             n = len(b.categories)
             bd = baseline_dist or {c: 1 / n for c in b.categories}
+            if set(bd) != set(b.categories) or abs(sum(bd.values()) - 1) > 1e-6:
+                raise LockRejected("baseline_dist 必须覆盖全部类别且和为 1")
+            for c_, v_ in bd.items():
+                _check_prob(v_, f"baseline_dist[{c_}]", LockRejected)
             note = baseline_note or "默认：categorical 均匀分布"
             bdist = tuple(sorted(bd.items()))
             pdist = tuple(sorted(prob_dist.items()))
             bprob = None
             crit = b.category_criteria  # 冻结类别判定标准
             cats = tuple(b.categories)
+        frozen: dict = {}
         for r in rules:
             if r.behavior_key != behavior_key:
                 raise LockRejected("规则与预测的行为不一致")
+            old = self.rules.get(r.id)
+            if old is not None and (old.definition != r.definition or not _same(old.spec, r.spec)):
+                raise LockRejected(f"规则 id {r.id} 已被另一个定义占用")
             self.rules.setdefault(r.id, r)
+            frozen[r.id] = _freeze_rule(r)
         content = dict(
             id=id, person_id=person_id, matter_id=matter_id, behavior_key=behavior_key, def_version=ver,
             outcome_type=b.outcome_type, frozen_categories=cats, settlement_criterion=crit, bind_mode=bind_mode,
             bound_opportunity_id=opportunity_id, conditions=tuple(sorted((conditions or {}).items())),
             premises=tuple((p.id, p.text, p.anchor_event, p.cutoff) for p in premises),
             prob=prob, prob_dist=pdist, baseline_prob=bprob, baseline_dist=bdist, baseline_note=note,
-            threshold=threshold, window=window, rule_defs=tuple((r.id, r.definition) for r in rules),
+            threshold=threshold, window=window,
+            rule_defs=tuple((r.id, r.definition, _canon(r.spec)) for r in rules),  # 哈希覆盖规则的实际规格，不只是标签
         )
         h = hashlib.sha256(_canon(content).encode()).hexdigest()
         pre = PreContent(
@@ -398,9 +455,10 @@ class Engine:
             locked_at=self.now(), content_hash=h,
         )
         p = Prediction(pre)
+        p.frozen_rules = frozen
         if bind_mode == "specific_item":  # specific_item：锁定时用已知事实求值
             facts = self.opps[opportunity_id].facts
-            for r in rules:
+            for r in (frozen[x.id] for x in rules):
                 v = r.value(facts)
                 p.rule_snaps[r.id] = RuleSnap(copy.deepcopy(v), v is not None)
         else:  # condition_match：规则在结算时对匹配机会求值
@@ -471,7 +529,7 @@ class Engine:
             raise EngineError("condition_match 结算需要指明匹配的机会")
         opp = self.opps[opp_id]
         if pre.bind_mode == "condition_match":
-            if any(opp.facts.get(k) != v for k, v in pre.conditions):
+            if any(not _same(opp.facts.get(k), v) for k, v in pre.conditions):
                 raise EngineError("该机会不满足预测的情境条件")
         rec = self.outcomes.get((opp_id, pre.behavior_key, pre.def_version))
         if rec is None:
@@ -504,7 +562,7 @@ class Engine:
                 updates["brier_baseline"] = round(sum((bd[c] - (1.0 if c == rec.outcome else 0.0)) ** 2 for c in bd), 10)
             if pre.bind_mode == "condition_match":
                 for rid in p.rule_snaps:
-                    v = self.rules[rid].value(opp.facts)
+                    v = p.frozen_rules[rid].value(opp.facts)
                     p.rule_snaps[rid] = RuleSnap(copy.deepcopy(v), v is not None)
         self.write_settlement_fields(pid, **updates)
         if end:
@@ -537,8 +595,8 @@ class Engine:
                 out[key] = PairRow(opp_id, bk, h1, h2, "not_evaluable", facts_basis=basis)
                 continue
             rec = self.outcomes[(opp_id, bk, src.pre.def_version)]
-            p1 = self.rules[h1].p_of(facts, rec.outcome)
-            p2 = self.rules[h2].p_of(facts, rec.outcome)
+            p1 = src.frozen_rules[h1].p_of(facts, rec.outcome)  # 用锁定时冻结的规则，不看后来的 engine.rules
+            p2 = src.frozen_rules[h2].p_of(facts, rec.outcome)
             row = PairRow(opp_id, bk, h1, h2, "not_evaluable", src.id, rec.outcome, p1, p2, None, basis)
             if p1 is None or p2 is None:
                 row.note = "所需字段未知"
@@ -548,7 +606,7 @@ class Engine:
                 if p1 <= 0 or p2 <= 0:
                     row.note = "概率为 0，似然比无定义"  # 不静默计入
                 else:
-                    row.status, row.lr = "counted", round(p2 / p1, 9)
+                    row.status, row.lr = "counted", _rnd(p2 / p1)
             else:
                 row.status = "below_threshold"
             out[key] = row
@@ -587,7 +645,7 @@ class Engine:
             rec = self.outcomes[(opp_id, src.pre.behavior_key, src.pre.def_version)]
             flag = False
             if not rec.recalled_only:
-                rule = self.rules[h]
+                rule = src.frozen_rules[h]
                 v = rule.value(facts)
                 if v is not None:
                     if rule.outcome_type == "binary":
@@ -600,12 +658,23 @@ class Engine:
                 self._log("counterexample", f"{h}@{opp_id}", {"flag": flag, "outcome": rec.outcome},
                           reason if flag else "更正后不再构成反例", src.id)
 
+    def recompute(self, opp_id: str, reason: str) -> None:
+        """补全未知事实后重算该机会的当前比较状态（没有已结算预测时什么也不会发生）。"""
+        self._recompute(opp_id, reason)
+
     def _recompute(self, opp_id: str, reason: str) -> None:
         o = self.opps[opp_id]
         self._apply_rows(self._compute_rows(opp_id, o.facts, o.corrected), reason)
         self._counterexamples(opp_id, o.facts, reason)
 
     # —— 事实更正（3.4） ——
+    def _preview_token(self, opp_id: str, field_name: str, value: Any) -> str:
+        """令牌绑定：这一笔变更 + 预览当时该机会的事实与比较状态。状态之后变了，令牌作废。"""
+        o = self.opps[opp_id]
+        state = [o.facts, sorted((list(k), r.state()) for k, r in self.rows.items() if k[0] == opp_id),
+                 sorted((p.id, p.st.status) for p in self.preds.values())]
+        return hashlib.sha256(_canon([opp_id, field_name, value, state]).encode()).hexdigest()[:24]
+
     def correction_preview(self, opp_id: str, field_name: str, value: Any) -> dict:
         o = self.opps[opp_id]
         facts = dict(o.facts)
@@ -619,17 +688,24 @@ class Engine:
         affected = []
         for p in self._settled_on(opp_id):
             diff = [rid for rid, s in p.rule_snaps.items()
-                    if self.rules[rid].value(facts) != s.value]
+                    if p.frozen_rules[rid].value(facts) != s.value]
             if diff:
                 affected.append({"prediction": p.id, "rules_whose_value_changes": diff, "brier_unchanged": p.st.brier})
-        return {"opportunity": opp_id, "field": field_name, "old": o.facts.get(field_name), "new": value,
+        token = self._preview_token(opp_id, field_name, value)
+        self._previews.add(token)
+        return {"opportunity": opp_id, "field": field_name, "old": o.facts.get(field_name), "new": value, "token": token,
                 "comparison_changes": changes, "predictions_marked_lock_facts_corrected": affected,
                 "not_yet_implemented": ["解读", "角色", "关系边"]}
 
     def apply_correction(self, opp_id: str, field_name: str, value: Any, *, confirmed_by_user: bool,
-                         source_spans: tuple = (), reason: str = "") -> Revision:
+                         source_spans: tuple = (), reason: str = "", preview_token: Optional[str] = None) -> Revision:
         if not confirmed_by_user:
             raise UnconfirmedCorrection("事实更正必须先预览并由用户确认")
+        if preview_token is None or preview_token not in self._previews:
+            raise UnconfirmedCorrection("事实更正必须先调用 correction_preview，并带上它返回的 token")
+        if preview_token != self._preview_token(opp_id, field_name, value):
+            raise UnconfirmedCorrection("预览与这次更正不一致，或预览之后数据已变化；请重新预览")
+        self._previews.discard(preview_token)  # 一次性
         o = self.opps[opp_id]
         before = o.facts.get(field_name)
         rev = self._log("fact_correction", f"{opp_id}.{field_name}", {"before": before, "after": value},
@@ -637,7 +713,7 @@ class Engine:
         o.facts[field_name] = value
         o.corrected = True
         for p in self._settled_on(opp_id):  # 快照与原 Brier 不动，仅打标
-            if any(self.rules[rid].value(o.facts) != s.value for rid, s in p.rule_snaps.items()):
+            if any(p.frozen_rules[rid].value(o.facts) != s.value for rid, s in p.rule_snaps.items()):
                 p.st.lock_facts_corrected = True
                 p.st.correction_revision_id = rev.id
         self._recompute(opp_id, f"事实更正：{field_name} {before!r} → {value!r}")
@@ -657,7 +733,7 @@ class Engine:
             else:
                 continue
             opps.append(opp)
-        return {"multiple": round(mult, 9), "n": len(opps), "opportunities": opps}
+        return {"multiple": _rnd(mult), "n": len(opps), "opportunities": opps}
 
     def comparison_detail(self, opp_id: str, h1: str, h2: str) -> dict:
         """展开：锁定时的概率 / 更正前的比较结果 / 当前比较结果。"""
@@ -665,8 +741,9 @@ class Engine:
         row = next(r for k, r in self.rows.items() if k[0] == opp_id and k[2:] == (a, b))
         rec = self.outcomes[(opp_id, row.behavior_key, self.preds[row.source_prediction_id].pre.def_version)]
         src = self.preds[row.source_prediction_id]
-        lock_p = {h: Rule.p_from_value(self.rules[h].outcome_type, src.rule_snaps[h].value, rec.outcome) for h in (a, b)}
-        changes = [r for r in self.revisions if r.kind == "comparison_changed" and r.subject == f"{a}–{b}@{opp_id}"]
+        lock_p = {h: Rule.p_from_value(src.frozen_rules[h].outcome_type, src.rule_snaps[h].value, rec.outcome) for h in (a, b)}
+        changes = [r for r in self.revisions if r.kind == "comparison_changed" and r.subject == f"{a}–{b}@{opp_id}"
+                   and r.reason.startswith("事实更正")]  # 仅来源变化（如先后结算顺序不同）不算“更正前”
         return {"at_lock": lock_p, "before_correction": changes[0].detail["before"] if changes else None,
                 "current": row.state(), "corrected": row.facts_basis == "corrected"}
 
@@ -721,7 +798,9 @@ class Engine:
                        "spec": r.spec} for r in self.rules.values()],
             "opps": [dc.asdict(o) for o in self.opps.values()],
             "preds": [{"pre": pre(p.pre), "st": dc.asdict(p.st),
-                       "snaps": {k: dc.asdict(v) for k, v in p.rule_snaps.items()}} for p in self.preds.values()],
+                       "snaps": {k: dc.asdict(v) for k, v in p.rule_snaps.items()},
+                       "frozen": {k: {"name": r.name, "behavior_key": r.behavior_key, "definition": r.definition, "spec": r.spec}
+                                  for k, r in p.frozen_rules.items()}} for p in self.preds.values()],
             "outcomes": [dc.asdict(o) for o in self.outcomes.values()],
             "rows": [dc.asdict(r) for r in self.rows.values()],
             "revisions": [dc.asdict(r) for r in self.revisions],
@@ -758,6 +837,8 @@ class Engine:
                 x["window"] = tuple(x["window"])
             p = Prediction(PreContent(**x), Settlement(**pd["st"]),
                            {k: RuleSnap(**v) for k, v in pd["snaps"].items()})
+            p.frozen_rules = {k: make_rule(k, f["name"], f["behavior_key"], f["spec"], f["definition"])
+                              for k, f in pd.get("frozen", {}).items()} or {k: e.rules[k] for k in p.rule_snaps}
             e.preds[p.id] = p
         for o in d["outcomes"]:
             o["source_spans"] = tuple(o["source_spans"])

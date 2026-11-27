@@ -147,7 +147,7 @@ def test_calibration_panel_separates_types_and_matters():
 
 def test_calibration_excludes_corrected_by_default():
     w = S.build_world_a()
-    w.correct_fact("E4", "submitter", "user", confirmed_by_user=True)
+    S.correct(w, "E4", "submitter", "user")
     p = calibration_panel(w)
     assert p["groups"]["binary"]["mean_brier"] == 0.49 and p["excluded_count"] == 1
     assert next(r for r in p["rows"] if r["id"] == "P-2")["excluded"]
