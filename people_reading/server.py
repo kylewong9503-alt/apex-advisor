@@ -680,11 +680,26 @@ if __name__ == "__main__":  # python -m people_reading.server --db my.db [--host
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True)
+    ap.add_argument("--init", action="store_true", help="创建新的加密库（口令用 getpass 输入，不进命令行历史），然后退出")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--allow-remote", action="store_true")
     ap.add_argument("--allow-host", action="append", default=[])
     a = ap.parse_args()
+    import os
+    if a.init:
+        import getpass
+        from .store import Store
+        if os.path.exists(a.db):
+            raise SystemExit("库已存在，不覆盖：" + a.db)
+        p1, p2 = getpass.getpass("设置口令："), getpass.getpass("再输一次：")
+        if p1 != p2 or len(p1) < 10:
+            raise SystemExit("两次不一致，或口令短于 10 位")
+        Store(a.db, p1).close()
+        os.chmod(a.db, 0o600)
+        raise SystemExit("已创建 " + a.db)
+    if not os.path.exists(a.db):  # 否则第一个打开页面的人就能给新库设口令
+        raise SystemExit("库不存在。先运行：python -m people_reading.server --db %s --init" % a.db)
     mdl = make_model()  # PR_PROVIDER=local（默认）| deepseek；deepseek 还需 PR_ALLOW_EXTERNAL=1 与 DEEPSEEK_API_KEY
     s = serve(a.db, a.host, a.port, allow_remote=a.allow_remote, allowed_hosts=a.allow_host, model=mdl)
     print(f"http://{a.host}:{a.port}  （口令在浏览器里输入，不经命令行）  模型：{mdl!r}")
