@@ -298,9 +298,17 @@ class Intake:
         return ph.id
 
     def confirm(self, did: str, edits: Optional[dict] = None) -> str:
+        """确认（或带修改确认）一条草稿；同时记一条理解回测的标签（模型原版 vs 你的最终版）。"""
         d = next(x for x in self.store.drafts() if x["id"] == did)
         if d["status"] not in ("pending",):
             return d["confirmed_ref"]
+        ref = self._confirm(d, edits)
+        from .skillset import record_label  # 延迟导入：skillset 依赖本模块
+        record_label(self.store, d, "edited" if edits else "confirmed", {**d["proposed"], **(edits or {})})
+        return ref
+
+    def _confirm(self, d: dict, edits: Optional[dict]) -> str:
+        did = d["id"]
         b = {**d["proposed"], **(edits or {})}
         tt = b.get("target_table", "observation")
         if tt in ("commitment", "commitment_update"):
@@ -417,7 +425,11 @@ class Intake:
 
     def reject(self, did: str) -> None:
         d = next(x for x in self.store.drafts() if x["id"] == did)
+        if d["status"] != "pending":
+            return  # 已处理过：不重复记
         self.store.save_draft(did, d["message_id"], d["source_spans"], d["proposed"], "rejected", None, self.clock())
+        from .skillset import record_label
+        record_label(self.store, d, "rejected", None)
 
     # —— 点回原话 ——
     def quote(self, obs_id: str) -> list:

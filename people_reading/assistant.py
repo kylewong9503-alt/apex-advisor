@@ -83,15 +83,60 @@ class Assistant:
         self.intake.store.add_message(cid, "user", text, now=self.intake.clock())
         if sv.skill == "会前准备":
             return self._prepare(cid, model)
+        if sv.skill in ("理解回测", "发言复述", "需求澄清"):
+            return self._understanding(cid, text, sv, model)
         pid = self._person_in(cid, text)
         if pid is None:
             msg = "想分析哪一位？"
             self._say(cid, msg)
             return AReply(msg, "ask")
+        if sv.skill in ("档案补全", "规律提炼", "建议与理由"):
+            return self._judging(cid, pid, sv, model)
         res = run_competing_explanation(self.w, pid, text, model=model or self.intake.model, conversation_id=cid,
                                         store=self.intake.store)
         self._say(cid, res["text"], "interpretation")
         return AReply(res["text"], "interpretation", interpretation_id=res["interpretation_id"])
+
+    # —— 套件：听懂你 ——
+    def _understanding(self, cid: str, text: str, sv, model) -> AReply:
+        from . import skillset as K
+        st = self.intake.store
+        if sv.skill == "理解回测":
+            m = K.backtest(st)["current"]
+            fa = "—" if m["field_accuracy"] is None else f"{m['field_accuracy']:.0%}"
+            hr = "—" if m["hallucination_rate"] is None else f"{m['hallucination_rate']:.0%}"
+            msg = f"【{sv.id}】标签 {m['labels']} 条；草稿 {m['drafts']} 条，其中你改过 {m['edited']} 条、不记 {m['rejected']} 条；字段准确率 {fa}，臆补率 {hr}。"
+        else:
+            prev = [r for r in st.messages(cid) if r["role"] == "user"][:-1] if hasattr(st, "messages") else []
+            target = prev[-1]["text"] if prev else ""
+            if not target:
+                msg = "还没有可以复述的发言。"
+            elif sv.skill == "发言复述":
+                out = K.restate(model or self.intake.model, target, world=self.w, lexicon=K.lexicon(st))
+                msg = ("【%s】我理解你说的是：\n" % sv.id + "\n".join(f"· {x['text']}（{x['label']}；原话：“{x['quote']}”）" for x in out)) \
+                    if out else "暂时无法复述（模型不可用或输出不合格），原话已保存。"
+            else:
+                out = K.clarify(model or self.intake.model, target, store=st)
+                msg = f"【{sv.id}】意图：{out['intent']}" + (f"；想问你：{out['question']}" if out and out.get("question") else "") \
+                    if out else "暂时无法判断（模型不可用或输出不合格）。"
+        self._say(cid, msg, "interpretation")
+        return AReply(msg, "interpretation")
+
+    # —— 套件：帮你判断 ——
+    def _judging(self, cid: str, pid: str, sv, model) -> AReply:
+        from . import skillset as K
+        if sv.skill == "档案补全":
+            gaps = K.profile_gaps(self.w, pid)
+            msg = f"【{sv.id}】" + ("；".join(f"{g['layer']}：{g['text']}" for g in gaps[:5]) if gaps else "三层都有记录，暂时没有空缺。")
+        elif sv.skill == "规律提炼":
+            cards = K.pattern_cards(self.w, pid)
+            msg = f"【{sv.id}】" + "；".join(f"{c['condition']} {c['text']}（{c['state']}）" for c in cards if c["text"])
+        else:
+            res = K.advise(model or self.intake.model, self.w, pid, self.intake.store)
+            msg = (f"【{sv.id}】" + "；".join(f"{i + 1}. {x['do']}（理由：{x['reason']}；失效条件：{x['fails_if']}）" for i, x in enumerate(res["items"]))) \
+                if res else "暂时给不出有依据的建议（模型不可用，或建议没有引用你确认过的观察）。"
+        self._say(cid, msg, "interpretation")
+        return AReply(msg, "interpretation")
 
     def _prepare(self, cid: str, model) -> AReply:
         w = self.w

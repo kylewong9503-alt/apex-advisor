@@ -22,7 +22,7 @@
 - `people_reading/demo/demo.html`：演示页（C5-g 与 A.5.6）
 
 ```bash
-python -m pytest people_reading/tests   # 238 项测试；python -m people_reading.demo_step3 … demo_step6 生成演示页
+python -m pytest people_reading/tests   # 247 项测试；python -m people_reading.demo_step3 … demo_step6 生成演示页
 python -m people_reading.demo           # 重新生成演示页
 ```
 
@@ -67,3 +67,8 @@ model = make_model()                  # 按 PR_PROVIDER 返回 LocalModel 或 Re
 **接 DeepSeek**（会把原话发到外部服务，先读 llm.py 里的说明）：在启动服务的电脑上设环境变量，不要把 key 写进文件或发到对话里：
 `PR_PROVIDER=deepseek PR_ALLOW_EXTERNAL=1 DEEPSEEK_API_KEY=… python -m people_reading.server --db my.db`；开启后页面顶部常驻“外部模型已开启”。
 已接通：说一句 → 草稿 → 逐条确认/不记；会前页的“记为行动”；会后结算（说明时间 → 开放题 → 前提核对 → 确认结果 → 复盘结果）。锁定预测：类别 → 各解释指向哪类 → 倾向 → 把握（几乎肯定 80% / 比较可能 60% / 略微倾向 45% / 说不准 均分，其余类别平均分）→ 前提 → 截止 → 看一眼再锁。结算会话在服务内存里，重启后需重新开始。
+
+## DeepSeek Skills 套件（skillset.py）
+6 个 skill 注册进 SkillRegistry：①需求澄清 ②发言复述 ③理解回测 ④档案补全 ⑤建议与理由 ⑥规律提炼。
+每次确认 / 修改 / 不记草稿都会记一条加密标签，供③打分（字段准确率、臆补率、复述通过率，最近 20% 只验收）。
+④⑥纯程序计算；①②⑤由模型写草稿，经程序校验（原话定位、数字与人名不得超出原话或证据包、禁用词、只能引用已确认的观察）。

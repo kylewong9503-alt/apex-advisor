@@ -51,6 +51,7 @@ BUILTIN = {COMPETING.skill: COMPETING}
 
 def _register_prep() -> None:  # 避免循环导入：premeeting 依赖 SkillVersion
     from .premeeting import PREP
+    from . import skillset  # noqa: F401  注册 6 个套件 skill
     BUILTIN[PREP.skill] = PREP
 
 
