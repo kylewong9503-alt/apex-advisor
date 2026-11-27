@@ -13,11 +13,11 @@ TOKENS_CSS = """:root{
 --surface:#f4f1e9;--surface-raised:#fbf9f4;--surface-sunk:#e9e4d8;--line:#d6cfbf;--line-strong:#7a808c;
 --ink:#1a2130;--ink-muted:#555d6c;--ai:#1f3b61;--on-ai:#f4f1e9;--kon:#14243d;--on-kon:#f4f1e9;
 --hanada:#35668f;--asagi:#3f8c96;--mizu:#d5e2ea;--shu:#a63a23;--on-shu:#fbf9f4;--shu-soft:#f3dfd6;--kin:#7f5c1a;--kin-soft:#efe3c8;
---focus:var(--shu);
+--focus:var(--ai);
 --space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:24px;--space-8:32px;--space-12:48px;--space-16:64px;
 --radius-sm:2px;--radius-md:6px;
---font-display:"Shippori Mincho B1","Noto Serif JP","Noto Serif SC","Songti SC","STSong",serif;
---font-sans:"Zen Kaku Gothic New","Noto Sans JP","PingFang SC","Hiragino Sans","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+--font-display:"Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+--font-sans:"Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
 --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
 --bg:var(--surface);--fg:var(--ink);--mut:var(--ink-muted);--card:var(--surface-raised);--acc:var(--ai);--warn:var(--shu)}
 @media(prefers-color-scheme:dark){:root{

@@ -22,7 +22,7 @@
 - `people_reading/demo/demo.html`：演示页（C5-g 与 A.5.6）
 
 ```bash
-python -m pytest people_reading/tests   # 215 项测试；python -m people_reading.demo_step3 … demo_step6 生成演示页
+python -m pytest people_reading/tests   # 221 项测试；python -m people_reading.demo_step3 … demo_step6 生成演示页
 python -m people_reading.demo           # 重新生成演示页
 ```
 
@@ -56,3 +56,6 @@ model = make_model()                  # 按 PR_PROVIDER 返回 LocalModel 或 Re
 
 `PR_MODEL` 默认 `deepseek-chat`；`deepseek-reasoner` 也支持。只允许 `https://api.deepseek.com`。
 密钥不落盘、不进日志、不进异常信息。评测：`python -m people_reading.model_eval --provider deepseek`。
+
+## 界面：一问一答（flow.py）
+主界面是 `people_reading/flow.py`：每屏一个问题、几个选项、一个按钮，答完直接给结论。会前 = 判断 →（分叉问题）→ 会上那一句话；会后 = 开放题（不给候选答案）→ 前提核对 → 结果。人物页、关系图、校准面板仍在 `shell.render_app`，作为“资料”入口。演示：`python -m people_reading.demo_flow`。

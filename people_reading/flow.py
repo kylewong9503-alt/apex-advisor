@@ -1,0 +1,237 @@
+"""一问一答的主界面：每屏一个问题、几个选项、一个按钮；答完直接给出结论。取代“工作台 + 多张卡片”的主入口。
+
+分工：
+  build_*_steps  把已有的视图模型（workbench_view、结算屏、前提问题、判断卡）变成“步骤”列表，不做任何新计算；
+  render_flow    把步骤渲染成一个静态页（hash 路由 #/1 #/2 …；选项、继续、跳过都在浏览器里完成）。
+
+规则：
+  - 结算首屏（会后第一问）必须是开放题，不给候选答案（避免引导）；之后的前提核对、结果确认才是选择题。
+  - 选项旁的小记号取代文字标签：实心圆 = 你的判断，虚线圆 = 模型提出，点线 = 事后回忆（不计入）。
+  - 所有动态文字经 Redactor.t：一键遮挡时不输出原文；页面标题遮挡时为常量。
+  - 图案是纯装饰（aria-hidden，不含文字）；文字只落在纯色区，不压图案。页面不请求任何外部资源。
+"""
+from __future__ import annotations
+
+import html
+import re
+from typing import Optional
+
+from .privacy import NO_CAPTURE_META, PRINT_GUARD_CSS, Redactor
+from .theme import TOKENS_CSS
+
+E = html.escape
+MARKS = {"you": "mk-you", "model": "mk-model", "rec": "mk-rec", "": ""}
+KEYS = "ABCDEF"
+
+
+# ───────────────────────── 步骤构造 ─────────────────────────
+def ask(q: str, options: list, *, cue: str = "", selected: Optional[int] = 0) -> dict:
+    """options: [(文字, 记号, 说明)]；记号 ∈ you / model / rec / ''。"""
+    return {"kind": "ask", "q": q, "cue": cue, "options": [dict(text=t, mark=m, sub=s) for t, m, s in options], "selected": selected}
+
+
+def open_ask(q: str, *, cue: str = "") -> dict:
+    return {"kind": "open", "q": q, "cue": cue}
+
+
+def build_prep_steps(v: dict) -> list:
+    """会前：判断 →（分叉问题）→ 会上那一句话。v 是 workbench_view(...) 的 matter 模式结果。"""
+    steps = []
+    mine, model = v.get("my_judgments", []), v.get("model_alternatives", [])
+    cue = v.get("title", "")
+    if mine or model:
+        opts = [(c["header"]["statement"], "you", "你的判断") for c in mine] + \
+               [(c["header"]["statement"], "model", "另一种可能") for c in model] + [("说不准", "", "")]
+        steps.append(ask("他最可能先问什么？", opts, cue=cue, selected=0))
+    f = v.get("fork")
+    if f:
+        opts = [(f"若{b['condition']}，{b['prep']}", "", "") for b in f["branches"]] + [(f["unsure_option"], "", "")]
+        steps.append(ask(f["question"], opts, cue="先问你一件事", selected=None))
+    line = next((a["request_line"] for a in v.get("actions", []) if "request_line" in a), None)
+    if line:
+        lock = any(a.get("buttons", {}).get("lock_prediction") for a in v.get("actions", []) if "request_line" not in a)
+        steps.append({"kind": "answer", "cue": "会上，先说这一句", "line": line["text"], "reason": line["reason"],
+                      "buttons": ["记为行动"] + (["锁定预测"] if lock else [])})
+    return steps
+
+
+_FOLD = re.compile(r"(\d+(?:\.\d+)?)\s*倍")
+
+
+def build_settle_steps(screen: dict, premise_qs: list = (), outcome: Optional[dict] = None, cards: list = ()) -> list:
+    """会后：开放题（不给候选）→ 前提核对（选择题）→ 结果确认 → 结果。"""
+    steps = [open_ask(screen["open_question"], cue=f"{screen['matter']} · {screen['meeting_time']}")]
+    for pq in premise_qs:
+        steps.append(ask(pq["question"], [(o, "", "") for o in pq["options"]], cue="先核对前提", selected=None))
+    if outcome and outcome.get("ask_user") and not outcome.get("reused"):
+        ch = outcome.get("choices") or ([outcome["outcome"]] if outcome.get("outcome") is not None else [])
+        if ch:
+            sel = ch.index(outcome["outcome"]) if outcome.get("outcome") in ch else None
+            basis = outcome.get("basis")
+            steps.append(ask("这次结果算哪一种？", [(str(c), "", "") for c in ch] + [("无法判断", "", "")],
+                             cue=f"依据：{basis}" if basis else "", selected=sel))
+    if cards:
+        c = cards[0]
+        pre = next((r["text"] for r in c["rows"] if r["label"] == "事前预测"), "")
+        act = next((r["text"] for r in c["rows"] if r["label"] == "实际发生"), "")
+        m = _FOLD.search(pre)
+        steps.append({"kind": "result", "cue": "结果", "title": act or c["header"]["statement"],
+                      "big": f"{m.group(1)}×" if m else "", "big_note": pre if m else "", "note": c["badge"],
+                      "buttons": ["完成"]})
+    return steps
+
+
+# ───────────────────────── 图案（青海波，纯装饰） ─────────────────────────
+def _scale_defs() -> str:
+    """每种“鳞”一个 <g>，之后用 <use> 摆放：页面体积小，颜色全走令牌，夜海主题自动变色。"""
+    def rings(n, R, stroke, fill_outer, dash=""):
+        out = []
+        for i in range(n, 0, -1):
+            r = round(R * i / n, 2)
+            out.append(f"<circle r='{r}' fill='{fill_outer if i == n else 'none'}' stroke='{stroke}'{dash}/>")
+        return "".join(out)
+    R = 26
+    g = {
+        "classic": rings(4, R, "var(--ai)", "var(--g)"),
+        "ripple_hi": rings(7, R, "var(--ai)", "var(--g)"), "ripple_lo": rings(2, R, "var(--ai)", "var(--g)"),
+        "dotted": rings(4, R, "var(--ai)", "var(--g)", " stroke-dasharray='.1 5' stroke-linecap='round' stroke-width='2.2'"),
+        "yoru": "".join(f"<circle r='{round(R * i / 4, 2)}' fill='{'var(--g)' if i == 4 else 'none'}' stroke='{'var(--on-kon)' if i % 2 else 'var(--asagi)'}'/>" for i in (4, 3, 2, 1)),
+    }
+    cols = ["var(--ai)", "var(--hanada)", "var(--asagi)", "var(--mizu)"]
+    g["banded"] = "".join(f"<circle r='{round(R * (4 - k) / 4, 2)}' fill='{cols[k]}' stroke='var(--g)'/>" for k in range(4))
+    for t, c in enumerate(["var(--mizu)", "var(--asagi)", "var(--hanada)", "var(--ai)"]):
+        g[f"tide{t}"] = "".join(f"<circle r='{round(R * i / 4, 2)}' fill='{c if (4 - i) % 2 == 0 else 'var(--g)'}' stroke='var(--g)'/>" for i in (4, 3, 2, 1))
+    return "".join(f"<g id='s-{k}' stroke-width='1.2'>{v}</g>" for k, v in g.items())
+
+
+def pattern(variant: str, w: int, h: int, *, uid: str, R: int = 26, ground: str = "var(--surface)") -> str:
+    """确定性（无随机）：同参数同输出。几何：横距 2R、行距 R/2、奇数行错位 R，自上而下叠压。"""
+    use = []
+    rows, cols = int(h / (R / 2)) + 3, int(w / (2 * R)) + 3
+    focus = (w * 0.55, h * 0.5)
+    for r in range(-1, rows):
+        cy = r * R / 2
+        for c in range(-1, cols):
+            cx = c * 2 * R + (R if r % 2 else 0)
+            sym = variant
+            if variant == "tide":
+                sym = f"tide{min(3, max(0, int(cy / h * 4)))}"
+            elif variant == "ripple":
+                d = ((cx - focus[0]) ** 2 + (cy - focus[1]) ** 2) ** .5 / max(w, h)
+                sym = "ripple_hi" if d < .16 else "classic" if d < .38 else "ripple_lo"
+            elif variant == "fade" and ((c * 7 + r * 13) % 10) / 10 > max(0, 1 - cy / h * 1.15):
+                continue
+            use.append(f"<use href='#s-{sym}' x='{cx}' y='{round(cy, 2)}'/>")
+    return (f"<svg viewBox='0 0 {w} {h}' preserveAspectRatio='xMidYMin slice' width='100%' height='100%' aria-hidden='true' focusable='false' "
+            f"style='--g:{ground};display:block'><rect width='{w}' height='{h}' fill='{ground}'/>{''.join(use)}</svg>")
+
+
+def steps_dots(n: int, total: int) -> str:
+    return "<span class='dots' role='img' aria-label='进度'>" + "".join(
+        f"<svg viewBox='0 0 22 22' class='{'on' if i < n else ''}'><circle cx='11' cy='11' r='10'/><circle cx='11' cy='11' r='6'/></svg>" for i in range(total)) + "</span>"
+
+
+# ───────────────────────── 渲染 ─────────────────────────
+FLOW_CSS = TOKENS_CSS + """
+*{box-sizing:border-box}html,body{height:100%}
+body{margin:0;background:var(--surface);color:var(--ink);font:15px/26px var(--font-sans)}
+.step{display:none;height:100vh;min-height:560px}.step.on{display:flex}
+.pane{flex:none;width:38%;max-width:560px;overflow:hidden;background:var(--surface)}.pane.dark{background:var(--kon)}
+.step.top{flex-direction:column}.step.top .pane{width:100%;max-width:none;height:230px}
+.step.right{flex-direction:row-reverse}
+.body{flex:1;min-width:0;padding:56px clamp(24px,6vw,96px);display:flex;flex-direction:column;justify-content:space-between;max-width:880px;margin:0 auto;width:100%}
+.hd{display:flex;justify-content:space-between;align-items:center}
+.brand{font:600 18px/1 var(--font-sans);letter-spacing:.12em}
+.dots{display:flex;gap:6px}.dots svg{width:22px;height:22px;fill:none;stroke:var(--ai);stroke-width:1.2;opacity:.45}.dots svg.on{fill:var(--ai);opacity:1}.dots svg.on circle+circle{stroke:var(--surface)}
+.cue{font:500 11px/16px var(--font-sans);letter-spacing:.16em;color:var(--ink-muted);margin-bottom:16px}
+h1{font:600 clamp(26px,3.2vw,44px)/1.4 var(--font-sans);letter-spacing:.02em;margin:0 0 40px}
+.opts{display:flex;flex-direction:column}
+.opt{display:flex;align-items:center;gap:16px;width:100%;text-align:left;padding:18px 0;border:0;border-top:1px solid var(--line);background:none;color:var(--ink);font:inherit;font-size:20px;line-height:1.5;cursor:pointer;min-height:44px}
+.opt:last-child{border-bottom:1px solid var(--line)}
+.opt .k{width:26px;height:26px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);font-size:12px;display:flex;align-items:center;justify-content:center;color:var(--ink-muted);flex:none}
+.opt small{display:block;font-size:13px;color:var(--ink-muted)}
+.opt[aria-checked=true]{background:var(--ai);color:var(--on-ai);margin:0 -16px;padding:18px 16px;width:calc(100% + 32px);border-color:var(--ai)}
+.opt[aria-checked=true] .k{border-color:var(--on-ai);color:var(--on-ai)}.opt[aria-checked=true] small{color:var(--on-ai);opacity:.85}
+.mk-you,.mk-model,.mk-rec{display:inline-block;margin-right:8px;flex:none}
+.mk-you{width:10px;height:10px;border-radius:50%;background:var(--ai)}.mk-model{width:10px;height:10px;border-radius:50%;border:1.5px dashed var(--hanada)}
+.mk-rec{width:14px;border-top:2px dotted var(--kin);vertical-align:middle}
+[aria-checked=true] .mk-you{background:var(--on-ai)}[aria-checked=true] .mk-model{border-color:var(--on-ai)}
+textarea{width:100%;font:inherit;font-size:20px;line-height:1.7;padding:16px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--ink);resize:none}
+.ft{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}.ft div{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.btn{height:44px;padding:0 24px;border-radius:var(--radius-sm);font:500 15px var(--font-sans);letter-spacing:.04em;display:inline-flex;align-items:center;cursor:pointer;text-decoration:none;border:1px solid var(--line-strong);background:var(--surface-raised);color:var(--ink)}
+.btn.p{background:var(--ai);border-color:var(--ai);color:var(--on-ai)}.btn.o{border-color:var(--ai);color:var(--ai)}
+.btn.q{border-color:transparent;background:none;color:var(--ai);text-decoration:underline;text-underline-offset:4px;padding:0 8px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.line{font:600 clamp(24px,3vw,44px)/1.45 var(--font-sans);margin:0 0 28px}
+.why{margin:0;font-size:17px;line-height:1.9;color:var(--ink-muted);max-width:560px}
+.big{font:600 clamp(56px,7vw,88px)/1 var(--font-sans);color:var(--ai);font-variant-numeric:tabular-nums}
+.bign{display:flex;align-items:baseline;gap:16px;margin-bottom:12px;flex-wrap:wrap}.bign span+span{font-size:16px;color:var(--ink-muted);line-height:1.7;max-width:480px}
+@media(max-width:720px){.step.on{flex-direction:column}.step.right{flex-direction:column}.pane,.step.top .pane{width:100%;max-width:none;height:150px}.body{padding:24px 22px}h1{margin-bottom:24px}.opt{font-size:17px}.opt[aria-checked=true]{margin:0 -12px;padding:18px 12px;width:calc(100% + 24px)}}
+@media(prefers-reduced-motion:no-preference){.step.on .body{animation:in .2s ease-out}@keyframes in{from{opacity:.6;transform:translateY(4px)}to{opacity:1;transform:none}}}
+"""
+
+FLOW_JS = """(function(){
+var S=[].slice.call(document.querySelectorAll('.step')),n=S.length;
+function go(i){i=Math.max(1,Math.min(n,i));S.forEach(function(s,k){s.classList.toggle('on',k===i-1)});var f=S[i-1].querySelector('.opt[aria-checked=true],textarea,.btn.p');f&&f.focus({preventScroll:true})}
+function cur(){var m=(location.hash||'#/1').match(/(\\d+)/);return m?+m[1]:1}
+function next(){location.hash='#/'+Math.min(n,cur()+1)}
+addEventListener('hashchange',function(){go(cur())});go(cur());
+document.addEventListener('click',function(e){var o=e.target.closest('.opt');
+ if(o){[].forEach.call(o.parentNode.children,function(x){x.setAttribute('aria-checked',x===o?'true':'false')});var b=o.closest('.step').querySelector('[data-next]');b&&(b.disabled=false);return}
+ if(e.target.closest('[data-next]')){e.preventDefault();next()}});
+document.addEventListener('keydown',function(e){var s=S[cur()-1];if(!s||e.target.tagName==='TEXTAREA')return;
+ var k='ABCDEF'.indexOf(e.key.toUpperCase());var os=s.querySelectorAll('.opt');if(e.key.length===1&&k>=0&&os[k]){os[k].click();return}
+ if(e.key==='Enter'){var b=s.querySelector('[data-next]');b&&!b.disabled&&next()}});
+})();"""
+
+VARIANTS = [("classic", "l"), ("banded", "r"), ("dotted", "t"), ("ripple", "l"), ("tide", "r"), ("fade", "t")]
+
+
+def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识人", library_href: str = "") -> str:
+    T = rd.t if rd is not None else (lambda x: x)
+    e = lambda x: E(T(str(x)))  # noqa: E731  动态内容：遮挡时不输出原文
+    masked = bool(rd is not None and rd.masked)
+    total = len(steps)
+    secs = []
+    vi = 0
+    for i, s in enumerate(steps):
+        last = i == total - 1
+        if s["kind"] == "answer":
+            variant, side, dark = "yoru", "l", True
+        else:
+            variant, side = VARIANTS[vi % len(VARIANTS)]
+            dark = False
+            vi += 1
+        art = pattern(variant, 560 if side != "t" else 1440, 900 if side != "t" else 230, uid=str(i),
+                      ground="var(--kon)" if dark else "var(--surface)")
+        hd = f"<div class='hd'><span class='brand'>识人</span>{steps_dots(i + 1, total)}</div>"
+        cue = f"<div class='cue'>{e(s['cue'])}</div>" if s.get("cue") else ""
+        nxt_idx = i + 2
+        skip = "<a class='btn q' href='#/%d' data-skip>跳过</a>" % nxt_idx
+        if s["kind"] == "ask":
+            os_ = "".join(
+                f"<button type='button' class='opt' role='radio' aria-checked='{'true' if k == s['selected'] else 'false'}'>"
+                f"<span class='k' aria-hidden='true'>{KEYS[k]}</span><span>"
+                + (f"<i class='{MARKS[o['mark']]}' aria-hidden='true'></i>" if o["mark"] else "") + f"{e(o['text'])}"
+                + (f"<small>{e(o['sub'])}</small>" if o["sub"] else "") + "</span></button>" for k, o in enumerate(s["options"]))
+            core = f"{cue}<h1>{e(s['q'])}</h1><div class='opts' role='radiogroup' aria-label='选项'>{os_}</div>"
+            ft = f"<div class='ft'>{skip}<button type='button' class='btn p' data-next{'' if s['selected'] is not None else ' disabled'}>继续　↵</button></div>"
+        elif s["kind"] == "open":
+            core = f"{cue}<h1>{e(s['q'])}</h1><textarea rows='5' aria-label='你的回答' placeholder='按你记得的说就行，原话越接近越好'></textarea>"
+            ft = "<div class='ft'><span></span><button type='button' class='btn p' data-next>提交</button></div>"
+        elif s["kind"] == "answer":
+            core = (f"{cue}<p class='line'>“{e(s['line'])}”</p><p class='why'>{e(s['reason'])}</p>")
+            btns = "".join(f"<button type='button' class='btn {'p' if k == 0 else 'o'}'>{E(b)}</button>" for k, b in enumerate(s["buttons"]))
+            ft = f"<div class='ft'><div>{btns}</div><button type='button' class='btn q' data-next>会后</button></div>" if not last else f"<div class='ft'><div>{btns}</div></div>"
+        else:  # result
+            big = (f"<div class='bign'><span class='big'>{e(s['big'])}</span><span>{e(s['big_note'])}</span></div>" if s.get("big") else "")
+            core = f"{cue}<h1>{e(s['title'])}</h1>{big}<p class='why'>{e(s['note'])}</p>"
+            lib = f"<a class='btn q' href='{E(library_href)}'>人物与关系图</a>" if library_href else ""
+            ft = f"<div class='ft'><div><button type='button' class='btn p'>完成</button>{lib}</div></div>"
+        secs.append(f"<section class='step {side}' aria-label='第 {i + 1} 步'><div class='pane{' dark' if dark else ''}' aria-hidden='true'>{art}</div>"
+                    f"<div class='body'>{hd}<div>{core}</div>{ft}</div></section>")
+    defs = f"<svg width='0' height='0' style='position:absolute' aria-hidden='true'><defs>{_scale_defs()}</defs></svg>"
+    ttl = "识人" if masked else title
+    return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"<title>{E(ttl)}</title>{NO_CAPTURE_META}<style>{FLOW_CSS}{PRINT_GUARD_CSS}</style></head><body>{defs}{''.join(secs)}<script>{FLOW_JS}</script></body></html>")
