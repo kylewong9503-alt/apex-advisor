@@ -245,3 +245,76 @@ def test_settlement_late_report_is_recall_and_not_counted(tmp_path):
         assert rows and all(getattr(r, "status", None) != "counted" for r in rows)  # R10：事后回忆不进入比较
     finally:
         s.shutdown(); s.server_close()
+
+
+def _prep_server(tmp_path, prep_out):
+    from people_reading.llm import ScriptedModel
+    from people_reading.tests import test_step4 as T4
+    w, st, it, pm, mid, iid = T4.c2(tmp_path)
+    path = st.path; st.close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel([prep_out]))
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    return s, mid
+
+
+def test_lock_prediction_by_choices_only(tmp_path):
+    from people_reading.tests import test_step4 as T4
+    prep = {**T4.PREP_OUT, "premise_options": [{"action": "主动展示或讲解分工说明", "anchor_event": "F 提出第一个实质性问题"}]}
+    s, mid = _prep_server(tmp_path, prep)
+    try:
+        ck = login(s)
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "/lock/start" in body  # 会前答案页上有“锁定预测”
+        assert req(s, "POST", "/lock/commit", headers=ck)[0] == 409  # 没开始就不能锁
+        assert req(s, "POST", "/lock/start", f"matter={mid}", headers=ck)[0] == 303
+        nxt = lambda k, c, extra="": req(s, "POST", "/lock/next", f"k={k}&choice={c}{extra}", headers=ck)[0]  # noqa: E731
+        assert "会后按这几类结算" in req(s, "GET", "/", headers=ck)[2]
+        assert nxt("lean", 0) == 409  # 不能跳步
+        assert nxt("cats", 0) == 303
+        for hid, c in (("H1", 0), ("H2", 1)):  # 先问各解释指向哪一类（形式化）
+            assert "他会先问哪一类" in req(s, "GET", "/", headers=ck)[2]
+            assert nxt("hyp", c, f"&hid={hid}") == 303
+        assert s.app.w.hypotheses["H1"].formal and s.app.w.hypotheses["H2"].formal
+        assert nxt("lean", 0) == 303
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "职责 60% · 专家需求 20% · 其他 20%" in body  # 把握的换算由程序给出
+        assert nxt("conf", 9) == 409 and nxt("conf", 1) == 303
+        assert nxt("premise", 0) == 303 and nxt("until", 0) == 303
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "锁定前看一眼" in body and "若F 提出第一个实质性问题始终没有发生，以会议结束为截止" in body
+        assert not s.app.w.engine.preds  # 看一眼时还没有锁定
+        assert req(s, "POST", "/lock/commit", headers=ck)[0] == 303
+        (p,) = s.app.w.engine.preds.values()
+        assert p.st.status == "locked" and dict(p.pre.prob_dist) == {"职责": 0.6, "专家需求": 0.2, "其他": 0.2}
+        assert p.pre.premises[0].cutoff.endswith("以会议结束为截止") and p.pre.premises[0].anchor_event
+        assert req(s, "POST", "/lock/commit", headers=ck)[0] == 409  # 不会锁第二次
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_lock_without_premise_options_and_cancel(tmp_path):
+    from people_reading.tests import test_step4 as T4
+    s, mid = _prep_server(tmp_path, T4.PREP_OUT)
+    try:
+        ck = login(s)
+        req(s, "GET", "/", headers=ck)
+        req(s, "POST", "/lock/start", f"matter={mid}", headers=ck)
+        assert req(s, "POST", "/lock/next", "k=cats&choice=1", headers=ck)[0] == 303  # 先不锁定
+        assert s.app.lk is None and not s.app.w.engine.preds
+        req(s, "POST", "/lock/start", f"matter={mid}", headers=ck)
+        for k, c, x in (("cats", 0, ""), ("hyp", 0, "&hid=H1"), ("hyp", 1, "&hid=H2"), ("lean", 1, ""), ("conf", 3, "")):
+            assert req(s, "POST", "/lock/next", f"k={k}&choice={c}{x}", headers=ck)[0] == 303
+        assert "没有前提" in req(s, "GET", "/", headers=ck)[2]  # 模型没给前提候选：直接到“看一眼”
+        assert req(s, "POST", "/lock/commit", headers=ck)[0] == 303
+        (p,) = s.app.w.engine.preds.values()
+        assert p.pre.premises == () and abs(sum(dict(p.pre.prob_dist).values()) - 1) < 1e-9
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_profile_sums_to_one_and_matches_design():
+    from people_reading.premeeting import profile
+    cats = ("职责", "专家需求", "其他")
+    assert profile(cats, "职责", 0.6) == {"职责": 0.6, "专家需求": 0.2, "其他": 0.2}
+    for p in (0.8, 0.6, 0.45, None):
+        assert abs(sum(profile(cats, "职责", p).values()) - 1) < 1e-9

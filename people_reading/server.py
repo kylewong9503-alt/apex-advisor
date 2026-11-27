@@ -22,7 +22,7 @@ from .flow import build_settle_steps, ask, build_prep_steps, open_ask, render_fl
 from .intake import Intake
 from .llm import RemoteModel, make_model
 from .engine import EngineError
-from .premeeting import PreMeeting
+from .premeeting import CONFIDENCE, RULE_P, PreMeeting, make_premise, profile
 from .settle_flow import SettlementSession
 from .privacy import AppLock, Locked, Redactor, TooManyAttempts
 from .shell import render_app
@@ -73,6 +73,7 @@ class App:
         self.sess: Optional[SettlementSession] = None  # 会后结算（内存里；重启后要重新开始）
         self.sess_hours: Optional[float] = None
         self.sess_review: Optional[dict] = None
+        self.lk: Optional[dict] = None  # 锁定预测进行中的选择（锁定前都可改，锁定后不可改）
         self.pms: dict = {}  # 议题 → PreMeeting（模型只在会前页打开时调用一次，失败也缓存，不反复发送）
         self.pm_failed: set = set()
         self.token: Optional[str] = None
@@ -100,6 +101,7 @@ class App:
     def on_lock(self) -> None:
         self.w, self.intake, self.pms, self.pm_failed = None, None, {}, set()
         self.sess, self.sess_hours, self.sess_review = None, None, None
+        self.lk = None
 
     def _world(self):
         self.lock.store  # 已上锁会抛 Locked
@@ -140,14 +142,16 @@ class App:
         store = self.lock.store
         w = self._world()
         rd = Redactor(w, "masked" if self.masked else "code")
-        steps = self.settle_steps() or self.pending_steps()
+        steps = self.settle_steps() or self.lock_steps() or self.pending_steps()
         if not steps and w.matters:
             mid = list(w.matters)[-1]
             pm = self.pre_meeting(mid)
             v = workbench_view(w, mid, store, prep=pm.prep if pm else None)
             steps = build_prep_steps(v)
             if pm and steps and steps[-1]["kind"] == "answer":
-                steps[-1]["buttons"] = [{"label": "记为行动", "act": {"url": "/act", "fields": {"matter": mid}}}] + steps[-1]["buttons"][1:] + \
+                lockb = [{"label": "锁定预测", "act": {"url": "/lock/start", "fields": {"matter": mid}, "reload": True}}] \
+                    if pm.prep.category_draft is not None else []
+                steps[-1]["buttons"] = [{"label": "记为行动", "act": {"url": "/act", "fields": {"matter": mid}}}] + lockb + \
                     [{"label": "会后", "act": {"url": "/settle/start", "fields": {"matter": mid}, "reload": True}}]
         steps = steps or [open_ask("今天想记一件什么事？", cue="直接说，不用先选人或填表", act={"url": "/say", "fields": {}})]
         return render_flow(steps, rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner())
@@ -244,6 +248,111 @@ class App:
             raise KeyError("outcome")
         i = int(choice)
         s.confirm_outcome(unobservable=True) if i == len(cats) else s.confirm_outcome(cats[i])
+
+    # —— 锁定预测：类别 → 各解释指向哪类 → 倾向 → 把握 →（前提 → 截止）→ 看一眼再锁 ——
+    def _lk_pm(self):
+        lk = self.lk
+        pm = self.pms.get(lk["mid"]) if lk else None
+        if pm is None or pm.prep is None or pm.prep.category_draft is None:
+            raise KeyError("lock")
+        return lk, pm
+
+    def _unformal(self, pm) -> list:
+        w = self._world()
+        return [h for h in pm.prep.hypothesis_for.values() if h in w.hypotheses and not w.hypotheses[h].formal]
+
+    def lock_steps(self) -> list:
+        if self.lk is None:
+            return []
+        lk, pm = self._lk_pm()
+        w, cats = self._world(), list(pm.prep.category_draft.categories)
+        crit = dict(pm.prep.category_draft.category_criteria)
+        n = lambda k: {"url": "/lock/next", "fields": {"k": k}}  # noqa: E731
+        if pm.behavior is None:
+            return [ask("会后按这几类结算，可以吗？", [("按这几类", "", " / ".join(cats)), ("先不锁定", "", "")],
+                        cue="；".join(f"{c}：{crit.get(c, '')}" for c in cats), selected=0, act=n("cats"))]
+        left = [h for h in self._unformal(pm) if h not in lk["hyp"]]
+        if left:
+            h = w.hypotheses[left[0]]
+            mark = "you" if h.proposed_by == "user" else "model"
+            return [ask(f"如果“{h.statement}”是对的，他会先问哪一类？", [(c, "", crit.get(c, "")) for c in cats],
+                        cue="你的判断" if mark == "you" else "另一种可能", selected=None, act={**n("hyp"), "fields": {"k": "hyp", "hid": h.id}})]
+        if lk.get("lean") is None:
+            return [ask("你觉得最可能是哪一种？", [(c, "", crit.get(c, "")) for c in cats], cue="凭直觉选", selected=None, act=n("lean"))]
+        if lk.get("conf") is None:
+            top = cats[lk["lean"]]
+            opts = [(name, "", " · ".join(f"{c} {round(v * 100)}%" for c, v in profile(cats, top, p).items())) for name, p in CONFIDENCE]
+            return [ask("你有多大把握？", opts, cue="其余的程序按比例分好，不用你算", selected=None, act=n("conf"))]
+        po = pm.prep.premise_options
+        if po and "premise" not in lk:
+            return [ask("这个预测，在什么情况下才算数？", [(f"{x['anchor_event']}之前，我没有{x['action']}", "", "") for x in po] + [("没有前提", "", "任何情况下都算")],
+                        cue="前提没成立，这次就不计分", selected=None, act=n("premise"))]
+        if lk.get("premise") is not None and "until" not in lk:
+            x = po[lk["premise"]]
+            return [ask(f"如果{x['anchor_event']}一直没有发生，算到什么时候？", [("到会议结束", "", ""), ("到会后 24 小时", "", "")],
+                        cue="写清截止点，会后才不会含糊", selected=None, act=n("until"))]
+        dist, prem = self._lk_build(pm)
+        beh = pm.prep.category_draft
+        rows = [("把握", " · ".join(f"{c} {round(v * 100)}%" for c, v in dist.items())),
+                ("前提", prem.text if prem else "没有前提"), ("截止", prem.cutoff if prem else "—"), ("怎么算", beh.description)]
+        return [{"kind": "summary", "cue": "锁定前看一眼", "title": f"最可能：{cats[lk['lean']]}", "rows": rows,
+                 "note": "锁定后不能改。会后按这里写的标准结算。",
+                 "act": {"url": "/lock/commit", "fields": {}}, "back": {"url": "/lock/restart", "fields": {}}}]
+
+    def _lk_build(self, pm):
+        lk, cats = self.lk, list(pm.prep.category_draft.categories)
+        dist = profile(cats, cats[lk["lean"]], CONFIDENCE[lk["conf"]][1])
+        prem = None
+        if lk.get("premise") is not None:
+            x = pm.prep.premise_options[lk["premise"]]
+            until = ("以会议结束", "以会后 24 小时")[lk["until"]]
+            prem = make_premise(f"PR-{len(self._world().engine.preds) + 1}", x["action"], x["anchor_event"], until)
+        return dist, prem
+
+    def lock_start(self, mid: str) -> None:
+        pm = self.pms.get(mid)
+        if pm is None or pm.prep is None or pm.prep.category_draft is None:
+            raise KeyError(mid)
+        self.lk = {"mid": mid, "hyp": {}}
+
+    def lock_next(self, k: str, choice: str, hid: str = "") -> None:
+        lk, pm = self._lk_pm()
+        cats = list(pm.prep.category_draft.categories)
+        if not choice.isdigit():
+            raise KeyError(k)
+        i = int(choice)
+        if k == "cats" and pm.behavior is None and i in (0, 1):
+            if i == 1:
+                self.lk = None
+                return
+            pm.confirm_categories()
+        elif k == "hyp" and pm.behavior is not None and hid in self._unformal(pm) and hid not in lk["hyp"] and i < len(cats):
+            lk["hyp"][hid] = cats[i]
+            if not [h for h in self._unformal(pm) if h not in lk["hyp"]]:  # 都选完了才形式化，进入比较
+                pm.formalize({h: profile(cats, c, RULE_P) for h, c in lk["hyp"].items()})
+        elif k == "lean" and pm.behavior is not None and not self._unformal(pm) and i < len(cats):
+            lk["lean"] = i
+        elif k == "conf" and lk.get("lean") is not None and i < len(CONFIDENCE):
+            lk["conf"] = i
+        elif k == "premise" and lk.get("conf") is not None and "premise" not in lk and i <= len(pm.prep.premise_options):
+            lk["premise"] = None if i == len(pm.prep.premise_options) else i
+        elif k == "until" and lk.get("premise") is not None and "until" not in lk and i in (0, 1):
+            lk["until"] = i
+        else:
+            raise KeyError(k)
+        self.lock.store.sync_world(self._world())
+
+    def lock_restart(self) -> None:
+        lk, _ = self._lk_pm()
+        self.lk = {"mid": lk["mid"], "hyp": lk["hyp"]}  # 类别与各解释已形式化（进入比较）不回退；其余重选
+
+    def lock_commit(self) -> None:
+        lk, pm = self._lk_pm()
+        if lk.get("conf") is None or (pm.prep.premise_options and "premise" not in lk) or (lk.get("premise") is not None and "until" not in lk):
+            raise KeyError("commit")
+        dist, prem = self._lk_build(pm)
+        pm.lock_prediction(dist, prem)
+        self.lk = None
 
     # —— 写操作（每个都先确认已解锁；落库后 sync_world）——
     def say(self, text: str) -> None:
@@ -390,6 +499,14 @@ def make_handler(app: App):
                         app.act((form.get("matter") or [""])[0])
                     elif path == "/settle/start":
                         app.settle_start((form.get("matter") or [""])[0])
+                    elif path == "/lock/start":
+                        app.lock_start((form.get("matter") or [""])[0])
+                    elif path == "/lock/next":
+                        app.lock_next((form.get("k") or [""])[0], (form.get("choice") or [""])[0], (form.get("hid") or [""])[0])
+                    elif path == "/lock/restart":
+                        app.lock_restart()
+                    elif path == "/lock/commit":
+                        app.lock_commit()
                     elif path == "/settle/done":
                         app.settle_done()
                     elif path == "/settle/when":

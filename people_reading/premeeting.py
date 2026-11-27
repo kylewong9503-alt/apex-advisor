@@ -74,7 +74,38 @@ def validate_prep(d) -> list:
     if mh is not None and not _is_str(mh.get("statement") if isinstance(mh, dict) else None):
         errs.append("model_hypothesis 需要 statement")
     errs += _category_draft(d.get("category_draft"))[1]
+    po = d.get("premise_options")
+    if po is not None and not (isinstance(po, list) and len(po) <= 3 and all(
+            isinstance(x, dict) and _is_str(x.get("action")) and _is_str(x.get("anchor_event")) for x in po)):
+        errs.append("premise_options 至多 3 项，每项需要 action 与 anchor_event")
     return errs
+
+
+# —— 锁定预测：把握的四档（用户选择；概率由程序换算，其余类别平均分） ——
+CONFIDENCE = (("几乎肯定", 0.8), ("比较可能", 0.6), ("略微倾向", 0.45), ("说不准", None))
+RULE_P = 0.7  # 形式化一条解释时，它所指的类别取 0.7，其余平均分（实现自定的默认值）
+
+
+def profile(categories, top: Optional[str], p: Optional[float]) -> dict:
+    """top 类别取 p，其余平均分；p 为 None 时各类均分。最后一类吸收舍入误差，保证总和为 1。"""
+    cats = list(categories)
+    if p is None or top is None:
+        d = {c: round(1 / len(cats), 6) for c in cats}
+    else:
+        rest = round((1 - p) / (len(cats) - 1), 6)
+        d = {c: (p if c == top else rest) for c in cats}
+    last = cats[-1]
+    d[last] = round(1 - sum(v for c, v in d.items() if c != last), 6)
+    return d
+
+
+def make_premise(pid: str, action: str, anchor_event: str, until: str) -> Premise:
+    """前提一律写成“标志事件之前，我没有做某事”（R11：写实际顺序与截止点）。措辞与提问都由程序拼出，不让模型自由发挥。"""
+    cutoff = f"若{anchor_event}始终没有发生，{until}为截止"
+    return Premise(pid, f"{anchor_event}之前，我没有{action}", anchor_event=anchor_event, cutoff=cutoff,
+                   question=f"在{anchor_event}之前，你有没有{action}？",
+                   cutoff_question=f"{until.replace('以', '到', 1)}前，你有没有{action}？",
+                   choices=(("没有", "holds"), ("有", "violated"), ("记不清", "unclear")))
 
 
 def validate_revise(d) -> list:
@@ -92,6 +123,7 @@ request_line: 一句会上可用的请求 {"text","reason"}
 model_hypothesis: 你提出的另一种解释 {"statement"}，没有则 null
 category_draft: 当用户判断与你的解释预测了不同的具体内容时，给多类别预测草稿
   {"behavior_key","description","categories":[含“其他”],"criteria":{每个类别: 可操作判定标准},"no_event_rule","multi_topic_rule"}，否则 null
+premise_options: 若某准备项可能改变被预测的行为，给出至多 3 个前提候选 [{"action": 用户可能做的事，如“主动展示或讲解分工说明”, "anchor_event": 被预测行为发生的标志事件，如“F 提出第一个实质性问题”}]，否则 null
 premise_warning: 若某准备项可能改变被预测的行为（如提前展示材料可能改变对方首问），说明需要把它实际展示的时点写进预测前提，否则 null
 类别必须互斥且穷尽；不得编造用户没说过的事实。"""
 SYSTEM_REVISE = """用户回答了分叉问题。按他的回答调整建议，只输出 JSON：items、request_line、premise_warning（字段含义同前）。"""
@@ -108,6 +140,7 @@ class PrepOutput:
     suggest_categorical: bool
     model_hypothesis_id: Optional[str] = None
     hypothesis_for: dict = field(default_factory=dict)  # 分支 → 假设 id
+    premise_options: list = field(default_factory=list)  # [{"action", "anchor_event"}]
 
     def buttons(self, i: int) -> dict:
         """每个准备项两个独立按钮：记为行动 / 锁定相关预测（没有可结算的预测时后者不可用）。"""
@@ -151,7 +184,7 @@ class PreMeeting:
             hyp_for["B"] = mid
         self.prep = PrepOutput(d["fork_question"], d["items"], d["request_line"], cat, d.get("premise_warning"),
                                suggest_categorical=cat is not None and len(hyp_for) >= 2, model_hypothesis_id=mid,
-                               hypothesis_for=hyp_for)
+                               hypothesis_for=hyp_for, premise_options=list(d.get("premise_options") or []))
         return self.prep
 
     # —— C3：分叉追问的回答 = 事后回忆（当时记录不可能：事件早已过去/模型为支持判断而问） ——
@@ -209,7 +242,7 @@ class PreMeeting:
         self.w.interventions[itv.id] = itv
         return itv
 
-    def lock_prediction(self, prob_dist: dict, premise: Premise, *, baseline_note: str = "无历史，默认均匀分布"):
+    def lock_prediction(self, prob_dist: dict, premise: Optional[Premise], *, baseline_note: str = "无历史，默认均匀分布"):
         assert self.behavior is not None
         beh = self.behavior
         if self.iid not in self.w.engine.opps:
@@ -218,7 +251,7 @@ class PreMeeting:
         p = self.w.engine.lock_prediction(
             id=f"P-{len(self.w.engine.preds) + 1}", person_id=self.person_id, matter_id=self.matter_id,
             behavior_key=beh.key, bind_mode="specific_item", opportunity_id=self.iid, rules=rules,
-            premises=(premise,), prob_dist=prob_dist, baseline_note=baseline_note,
+            premises=(premise,) if premise is not None else (), prob_dist=prob_dist, baseline_note=baseline_note,
             quadrant_at_lock=self.w.persons[self.person_id].quadrant)  # 锁定时的象限，之后象限变化也可追溯
         self.w.followups.append(Followup(f"F{len(self.w.followups) + 1}", "settle_prediction", p.id, "after_meeting",
                                          f"会后结算 {p.id}"))

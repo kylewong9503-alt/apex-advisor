@@ -164,6 +164,7 @@ textarea{width:100%;font:inherit;font-size:20px;line-height:1.7;padding:16px;bor
 .btn:disabled{opacity:.45;cursor:not-allowed}
 :focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .bn{position:fixed;top:0;left:0;right:0;z-index:5;background:var(--kin-soft);color:var(--kin);font-size:12px;line-height:20px;text-align:center;padding:2px 8px}
+.srs{border-bottom:1px solid var(--line);max-width:620px}.sr{display:flex;gap:20px;padding:12px 0;border-top:1px solid var(--line);font-size:16px;line-height:1.6}.sr span:first-child{width:56px;flex:none;color:var(--ink-muted)}
 .line{font:600 clamp(24px,3vw,44px)/1.45 var(--font-sans);margin:0 0 28px}
 .why{margin:0;font-size:17px;line-height:1.9;color:var(--ink-muted);max-width:560px}
 .big{font:600 clamp(56px,7vw,88px)/1 var(--font-sans);color:var(--ai);font-variant-numeric:tabular-nums}
@@ -238,6 +239,12 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = "识
                 return f"<button type='button' class='btn {'p' if k == 0 else 'o'}'{(actattr(a) + ('' if a.get('reload') else ' data-once') + (' data-reload' if a.get('reload') else '')) if a else ''}>{E(label)}</button>"
             btns = "".join(one(k, b) for k, b in enumerate(s["buttons"]))
             ft = f"<div class='ft'><div>{btns}</div><button type='button' class='btn q' data-next>会后</button></div>" if not last else f"<div class='ft'><div>{btns}</div></div>"
+        elif s["kind"] == "summary":  # 锁定前看一眼：几行事实 + 一句提醒 + 锁定 / 返回修改
+            rows = "".join(f"<div class='sr'><span>{E(k)}</span><span>{e(v)}</span></div>" for k, v in s["rows"])
+            mk = f"<i class='{MARKS[s.get('mark', '')]}' aria-hidden='true'></i>" if s.get("mark") else ""
+            core = f"{cue}<h1>{mk}{e(s['title'])}</h1><div class='srs'>{rows}</div><p class='why' style='margin-top:20px;font-size:14px'>{E(s['note'])}</p>"
+            ft = (f"<div class='ft'><div><button type='button' class='btn p'{actattr(s.get('act'))}>锁定预测</button>"
+                  f"<button type='button' class='btn q'{actattr(s.get('back'))}>返回修改</button></div></div>")
         else:  # result
             big = (f"<div class='bign'><span class='big'>{e(s['big'])}</span><span>{e(s['big_note'])}</span></div>" if s.get("big") else "")
             core = f"{cue}<h1>{e(s['title'])}</h1>{big}<p class='why'>{e(s['note'])}</p>"
