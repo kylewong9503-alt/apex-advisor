@@ -416,3 +416,21 @@ def test_model_failure_shows_a_notice_once_and_logs_only_the_reason(tmp_path, ca
 def test_submit_button_shows_busy_state():
     from people_reading.flow import FLOW_JS
     assert "处理中…" in FLOW_JS and "aria-busy" in FLOW_JS
+
+
+def test_origin_check_behind_a_rewriting_proxy(tmp_path):
+    from people_reading.llm import ScriptedModel
+    path = str(tmp_path / "p.db"); Store(path, PW).close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel([]), allowed_hosts=["kagami.example.net"])
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    try:
+        ck = login(s)
+        # 代理把 Host 改成 localhost，但 Origin 是白名单里的真实域名：放行
+        ok = req(s, "POST", "/mask", headers={**ck, "Origin": "https://kagami.example.net"})
+        assert ok[0] == 303
+        # Origin 不在白名单、也不等于 Host：仍然拒绝
+        assert req(s, "POST", "/mask", headers={**ck, "Origin": "https://evil.example"})[0] == 403
+        # 白名单是精确匹配，不是后缀匹配
+        assert req(s, "POST", "/mask", headers={**ck, "Origin": "https://kagami.example.net.evil.example"})[0] == 403
+    finally:
+        s.shutdown(); s.server_close()

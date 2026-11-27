@@ -555,8 +555,14 @@ def make_handler(app: App):
             return is_loopback(name) or h in app.allowed_hosts or name in app.allowed_hosts
 
         def _same_origin(self) -> bool:
+            """写请求必须来自本站：Origin 与 Host 一致；经反向代理（Codespaces、Caddy、Tailscale）时 Host 可能被改写成
+            localhost，此时只要 Origin 的主机在白名单里也放行。浏览器自己填 Origin，页面脚本改不了，所以这仍然挡得住跨站请求。"""
             o = self.headers.get("Origin")
-            return o is None or urlsplit(o).netloc.lower() == (self.headers.get("Host") or "").lower()
+            if o is None:
+                return True
+            netloc = urlsplit(o).netloc.lower()
+            host = (self.headers.get("Host") or "").lower()
+            return netloc == host or netloc in app.allowed_hosts or netloc.rsplit(":", 1)[0] in app.allowed_hosts
 
         def _cookie(self) -> str:
             for part in (self.headers.get("Cookie") or "").split(";"):
