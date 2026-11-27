@@ -404,3 +404,11 @@ def test_remote_errors_carry_status_only_and_fall_back(env):
         assert r.fallback and st.get_message(r.message_id)["text"] == TEXT1
     finally:
         srv.shutdown()
+
+
+def test_eval_recorder_captures_raw_output_and_still_scores(tmp_path):
+    from people_reading.model_eval import Recorder
+    rec = Recorder(ScriptedModel(["不是 JSON", "还是不是"] * 12))
+    res = model_eval.evaluate(rec, repeats=1)
+    assert any(v == 0.0 for v in res["rates"].values())
+    assert rec.log and rec.log[0]["raw"] == "不是 JSON" and "用户原话" in rec.log[0]["user"]

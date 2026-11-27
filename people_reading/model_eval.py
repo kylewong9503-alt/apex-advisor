@@ -88,6 +88,22 @@ CASES = {"record_two": case_record_two, "answer": case_answer, "question": case_
          "no_fabrication": case_no_fabrication}
 
 
+class Recorder:
+    """包一层，记录每次模型调用的提示与原始输出，评测失败时用来看模型到底说了什么。只含合成用例，不含真实数据。"""
+
+    def __init__(self, inner) -> None:
+        self.inner, self.log = inner, []
+        self.structured = LocalModel.structured.__get__(self)
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    def chat(self, system: str, user: str) -> str:
+        raw = self.inner.chat(system, user)
+        self.log.append({"user": user, "raw": raw})
+        return raw
+
+
 def evaluate(model, repeats: int = 3) -> dict:
     """返回 {"rates": {检查名: 通过率}, "errors": {异常类型: 次数}}。异常（如连接失败）如实记录，不当作通过。"""
     passes: dict = {}
@@ -114,6 +130,7 @@ def main(argv=None) -> int:
     ap.add_argument("--provider", choices=("local", "deepseek"), default="local",
                     help="deepseek 会把评测用例发往外部服务，需 PR_ALLOW_EXTERNAL=1 与 DEEPSEEK_API_KEY")
     ap.add_argument("--repeats", type=int, default=3)
+    ap.add_argument("--dump", help="把每次调用的提示与模型原始输出写到这个 JSON 文件（贴回来用于调提示词）")
     ap.add_argument("--bar", type=float, default=0.9)
     a = ap.parse_args(argv)
     if a.provider == "deepseek":
@@ -121,7 +138,11 @@ def main(argv=None) -> int:
                                                        "PR_MODEL": "deepseek-chat" if a.model == DEFAULT_MODEL else a.model})
     else:
         model = LocalModel(a.base_url, a.model)  # 非本机地址在这里就会被拒绝
-    res = evaluate(model, a.repeats)
+    rec = Recorder(model)
+    res = evaluate(rec, a.repeats)
+    if a.dump:
+        Path(a.dump).write_text(json.dumps({"model": a.model, "provider": a.provider, "result": res, "calls": rec.log},
+                                           ensure_ascii=False, indent=1), encoding="utf-8")
     print(json.dumps(res, ensure_ascii=False, indent=1))
     bad = {k: v for k, v in res["rates"].items() if v < a.bar}
     bad.update({k: v for k, v in res["errors"].items()})
