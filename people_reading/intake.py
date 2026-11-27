@@ -108,7 +108,7 @@ class Intake:
 
     # —— 录入 ——
     def handle(self, cid: str, text: str, *, hours_since_event: float = 0, prompt_kind: Optional[str] = None,
-               interaction_id: Optional[str] = None) -> Reply:
+               interaction_id: Optional[str] = None, about: Optional[str] = None) -> Reply:
         """prompt_kind：None | "settlement_reminder" | "judgment_support_question"（见 2.5）。
         interaction_id：把这条消息产生的草稿挂到指定互动（结算时挂到刚结束的那场会）。"""
         mid = self.store.add_message(cid, "user", text, now=self.clock())  # 先保存原话，任何失败都不丢
@@ -119,6 +119,9 @@ class Intake:
             prompt += "已记录且未关闭的承诺：" + "；".join(f"{c.id}={c.content}" for c in open_c) + "\n"
         if pending:
             prompt += f"你上一轮问用户：{pending['question']}\n下面是用户对它的回答。\n"
+        if about and about in self.world.persons:
+            self.focus[cid] = about
+            prompt += f"用户指明这句话主要说的是：{self.world.persons[about].display_name}（人物已确定）\n"
         prompt += f"用户原话：{text}"
         try:
             data = self.model.structured(SYSTEM_EXTRACT, prompt, validate_extraction)
@@ -137,6 +140,8 @@ class Intake:
                 dropped += 1
                 continue
             rep, sub = self.resolve(x["reporter"]), self.resolve(x["subject"])
+            if about and about in self.world.persons and sub[0] in ("none", "many"):
+                sub = ("one", about)  # 你点了人物标签：模型写的是“他”“老板”这类没法对应的称呼时，主体就是你选的人
             amb = next((n for n, r in ((x["reporter"], rep), (x["subject"], sub)) if r[0] == "many"), None)
             if amb:
                 ask = f"你说的“{amb}”是指哪一位？"

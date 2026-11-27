@@ -579,3 +579,125 @@ def test_read_event_validation():
                 ok("她想要资源", "原话里没有的依据", "x")):           # 依据找不到
         assert read_event(ScriptedModel([{"explanations": [two[0], bad]}]), text) is None  # 剩一条就不给（不足 2 条）
     assert read_event(ScriptedModel([{"explanations": [two[0], dict(two[0])]}]), text) is None  # 重复的解释只算一条
+
+
+# ───────── 人物标签：点一下就知道说的是谁，能对应到他的 profile ─────────
+def _who_server(tmp_path, outs):
+    from people_reading.llm import ScriptedModel
+    from people_reading.tests import test_step4 as T4
+    w, st, it = T4.env(tmp_path, [])
+    for _ in range(2):  # M 被记录得比 F 多
+        w.add_observation("MTG-X", ({"message_id": 1, "start": 0, "end": 1},), "behavior", "user", "M", "m", source_mode="contemporaneous")
+    st.sync_world(w)
+    path = st.path; st.close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel(outs))
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    return s
+
+
+def _chip_toks(body):
+    import re
+    return re.findall(r"<button type='button' class='chip' aria-pressed='false' data-tok='([^']*)'>([^<]*)</button>", body)
+
+
+def test_people_chips_ordered_by_frequency_and_masked_in_private_view(tmp_path):
+    s = _who_server(tmp_path, [])
+    try:
+        ck = login(s)
+        chips = _chip_toks(req(s, "GET", "/", headers=ck)[2])
+        labels = [l for _, l in chips]
+        assert labels.index("M") < labels.index("F")  # 被记得多的在前
+        assert "＋ 新的人" in req(s, "GET", "/", headers=ck)[2]
+        req(s, "POST", "/mask", headers=ck)
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert [l for _, l in _chip_toks(body)] and all(l.startswith("●") for _, l in _chip_toks(body))  # 遮挡时标签也遮挡
+        assert "data-tok='M'" not in body and "data-tok='F'" not in body  # 页面里没有人物 id
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_tag_binds_pronoun_subject_to_the_chosen_person(tmp_path):
+    from people_reading.tests.test_step2 import extraction
+    d = {"kind": "behavior", "reporter": "我", "subject": "他", "content": "他突然要合作", "is_interpretation": False,
+         "source_quote": "他突然跟我要合作", "behavior_key": None, "occurred": None}
+    s = _who_server(tmp_path, [extraction(drafts=[d])])
+    try:
+        ck = login(s)
+        tok = dict((l, t) for t, l in _chip_toks(req(s, "GET", "/", headers=ck)[2]))["F"]
+        assert req(s, "POST", "/say", f"text={quote('他突然跟我要合作')}&who={tok}", headers=ck)[0] == 303
+        dr = s.app.lock.store.drafts(status="pending")[0]
+        assert dr["proposed"]["subject_id"] == "F"  # “他”没法对应，但你点了 F
+        ref = s.app.intake.confirm(dr["id"])
+        assert next(o for o in s.app.w.observations.values() if o.id == ref).subject_person_id == "F"
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_new_person_is_created_once_and_appears_as_a_tag(tmp_path):
+    from people_reading.tests.test_step2 import extraction
+    d = {"kind": "behavior", "reporter": "我", "subject": "老板", "content": "突然要合作", "is_interpretation": False,
+         "source_quote": "老板突然跟我要合作", "behavior_key": None, "occurred": None}
+    s = _who_server(tmp_path, [extraction(drafts=[d]), extraction(drafts=[dict(d, source_quote="老板又来要合作")])])
+    try:
+        ck = login(s)
+        n = len(s.app.w.persons)
+        assert req(s, "POST", "/say", f"text={quote('老板突然跟我要合作')}&newname={quote('Judy')}", headers=ck)[0] == 303
+        assert len(s.app.w.persons) == n + 1
+        pid = next(p.id for p in s.app.w.persons.values() if p.display_name == "Judy")
+        assert s.app.lock.store.drafts(status="pending")[0]["proposed"]["subject_id"] == pid
+        # 再用同名：不重复建
+        req(s, "POST", "/say", f"text={quote('老板又来要合作')}&newname={quote('Judy')}", headers=ck)
+        assert len([p for p in s.app.w.persons.values() if p.display_name == "Judy"]) == 1
+        assert "Judy" in [l for _, l in _chip_toks(req(s, "GET", "/say", headers=ck)[2])]
+        # 重开后还在（落库了）
+        assert any(p.display_name == "Judy" for p in s.app.lock.store.load_world()[0].persons.values())
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_bad_tag_token_is_rejected_and_creates_nothing(tmp_path):
+    s = _who_server(tmp_path, [])
+    try:
+        ck = login(s)
+        n = len(s.app.w.persons)
+        assert req(s, "POST", "/say", f"text={quote('x')}&who=not-a-token", headers=ck)[0] == 409
+        assert len(s.app.w.persons) == n and not s.app.lock.store.drafts()
+        # 只点了标签没写话：什么也不做，也不建人
+        assert req(s, "POST", "/say", f"text=&newname={quote('Zed')}", headers=ck)[0] == 303 and len(s.app.w.persons) == n
+    finally:
+        s.shutdown(); s.server_close()
+
+
+BROWSER_TAG_JS = r"""
+const {chromium}=require('playwright');(async()=>{const [port,pw]=process.argv.slice(2);
+const b=await chromium.launch();const p=await b.newPage({viewport:{width:390,height:844}});const out={errors:[],posts:[]};
+p.on('pageerror',e=>out.errors.push(e.message));p.on('console',m=>{if(m.type()==='error')out.errors.push(m.text())});
+p.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/say'))out.posts.push(r.postData())});
+await p.goto('http://127.0.0.1:'+port+'/unlock');await p.fill('input[name=passphrase]',pw);await p.click('button[type=submit]');await p.waitForURL('**/');
+await p.click('.step.on .chip[data-new]');out.inputShown=await p.evaluate(()=>!document.querySelector('.step.on .newname').hidden);
+await p.fill('.step.on .newname','Judy');await p.fill('textarea','老板突然跟我要合作');
+await p.click('.step.on button.btn.p');await p.waitForTimeout(1500);console.log(JSON.stringify(out));await b.close()})();
+"""
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="需要 node + playwright")
+def test_real_browser_new_person_tag_is_submitted(tmp_path):
+    from people_reading.llm import ScriptedModel
+    from people_reading.tests.test_step2 import extraction
+    d = {"kind": "behavior", "reporter": "我", "subject": "老板", "content": "突然要合作", "is_interpretation": False,
+         "source_quote": "老板突然跟我要合作", "behavior_key": None, "occurred": None}
+    path = str(tmp_path / "bt.db"); Store(path, PW).close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel([extraction(drafts=[d])]))
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    js = tmp_path / "t.js"; js.write_text(BROWSER_TAG_JS)
+    try:
+        r = subprocess.run(["node", str(js), str(s.server_address[1]), PW], capture_output=True, text=True, timeout=90)
+        if "Cannot find module" in r.stderr:
+            pytest.skip("没有 playwright")
+        import json as _j
+        out = _j.loads(r.stdout.strip().splitlines()[-1])
+        assert out["errors"] == [] and out["inputShown"] is True
+        assert any("newname=Judy" in (p or "") for p in out["posts"]), out["posts"]
+        assert any(p.display_name == "Judy" for p in s.app.w.persons.values())
+    finally:
+        s.shutdown(); s.server_close()

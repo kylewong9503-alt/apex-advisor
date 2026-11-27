@@ -302,7 +302,7 @@ class App:
         steps = self.settle_steps() or self.lock_steps() or self.clarify_steps() or self.pending_steps() or self.reading_steps()
         if not steps and w.matters and not self._has_judgment():
             # 会前准备是“你的判断 vs 另一种可能”：你还没说出判断时不调用模型，先问你
-            steps = [open_ask("你觉得他会先问什么？", cue=w.matters[list(w.matters)[-1]].title, act={"url": "/say", "fields": {}})]
+            steps = [self._say_step("你觉得他会先问什么？", w.matters[list(w.matters)[-1]].title, rd)]
         if not steps and w.matters:
             mid = list(w.matters)[-1]
             pm = self.pre_meeting(mid)
@@ -319,7 +319,7 @@ class App:
                 if self._settleable():
                     btns.append({"label": "会后", "act": {"url": "/settle/start", "fields": {}, "reload": True}})
                 steps[-1]["buttons"] = btns
-        steps = steps or [open_ask("今天想记一件什么事？", cue="直接说，不用先选人或填表", act={"url": "/say", "fields": {}})]
+        steps = steps or [self._say_step("今天想记一件什么事？", "直接说；点一下标签就告诉我说的是谁", rd)]
         return render_flow(steps, rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner(), notice=self._take_notice(),
                            say_href="" if steps[0]["kind"] == "open" else "/say")
 
@@ -327,10 +327,44 @@ class App:
         n, self.notice = self.notice, ""
         return n
 
+    def people_chips(self, rd) -> list:
+        """常提到的人（按被记录的次数、再按新近排序）做成标签；令牌是带盐哈希，页面里没有人物 id，遮挡时显示的也是遮挡后的名字。"""
+        from collections import Counter
+        w = self._world()
+        freq = Counter(o.subject_person_id for o in w.observations.values())
+        people = [p for p in w.persons.values() if not p.is_self and not p.is_placeholder and not p.merged_into_id]
+        order = {p.id: i for i, p in enumerate(people)}
+        people.sort(key=lambda p: (-freq.get(p.id, 0), -order[p.id]))
+        return [(self.tok("who", p.id), rd.p(p.id)) for p in people[:12]]
+
+    def _who(self, tok: str, newname: str) -> Optional[str]:
+        """页面上选的“这是在说谁”：返回人物 id；选“新的人”就当场建一个。令牌对不上就拒绝，不猜。"""
+        w = self._world()
+        name = newname.strip()[:40]
+        if name:
+            from .world import Person
+            exist = [p.id for p in w.persons.values() if p.display_name == name and not p.merged_into_id]
+            if exist:
+                return exist[0]  # 同名的已经有了：用已有的，不重复建
+            pid = w._nid("P", w.persons)
+            while pid in w.persons:
+                pid += "x"
+            self.intake.register_person(Person(pid, name, code=name), aliases=(name,))
+            return pid
+        if not tok:
+            return None
+        for p in w.persons.values():
+            if not p.is_self and not p.is_placeholder and not p.merged_into_id and hmac.compare_digest(self.tok("who", p.id), tok):
+                return p.id
+        raise KeyError("who")
+
+    def _say_step(self, q: str, cue: str, rd) -> dict:
+        return open_ask(q, cue=cue, act={"url": "/say", "fields": {}}, people=self.people_chips(rd))
+
     def say_html(self) -> str:
         """随时记一句：不论现在在哪个流程里。"""
         rd = Redactor(self._world(), "masked" if self.masked else "code")
-        step = open_ask("想记一件什么事？", cue="直接说，不用先选人或填表", act={"url": "/say", "fields": {}})
+        step = self._say_step("想记一件什么事？", "直接说；点一下标签就告诉我说的是谁", rd)
         return render_flow([step], rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner())
 
     def library_html(self) -> str:
@@ -604,12 +638,13 @@ class App:
     def clarify_skip(self) -> None:
         self.lock.store.set_pending(self.CID, None)
 
-    def say(self, text: str, answering: bool = False) -> None:
+    def say(self, text: str, answering: bool = False, who: str = "", newname: str = "") -> None:
         text = text.strip()
         if text and self.intake is not None:
+            about = self._who(who, newname) if (who or newname.strip()) else None
             if not answering:  # 独立的“记一句”不是回答：不续接上一个追问，也不并进同一个互动
                 self.lock.store.set_pending(self.CID, None)
-            r = self.intake.handle(self.CID, text)
+            r = self.intake.handle(self.CID, text, about=about)
             self.lock.store.sync_world(self._world())
             if r.fallback:
                 why = self.intake.last_error
@@ -777,7 +812,8 @@ def make_handler(app: App):
             try:
                 with app.mutex:
                     if path == "/say":
-                        app.say((form.get("text") or [""])[0][:4000], answering=(form.get("answer") or [""])[0] == "1")
+                        app.say((form.get("text") or [""])[0][:4000], answering=(form.get("answer") or [""])[0] == "1",
+                                who=(form.get("who") or [""])[0], newname=(form.get("newname") or [""])[0])
                     elif path == "/clarify/skip":
                         app.clarify_skip()
                     elif path == "/confirm_many":
