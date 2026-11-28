@@ -173,6 +173,7 @@ h1{font:600 clamp(26px,3.2vw,44px)/1.4 var(--font-sans);letter-spacing:.02em;mar
 .mk-rec{width:14px;border-top:2px dotted var(--kin);vertical-align:middle}
 [aria-checked=true] .mk-you{background:var(--on-ai)}[aria-checked=true] .mk-model{border-color:var(--on-ai)}
 textarea{width:100%;font:inherit;font-size:20px;line-height:1.7;padding:16px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--ink);resize:none}
+.rls{display:flex;flex-direction:column;margin-top:8px}.rl{display:flex;justify-content:space-between;align-items:center;min-height:48px;padding:0 4px;border-top:1px solid var(--line);color:var(--ink);text-decoration:none}.rl:last-child{border-bottom:1px solid var(--line)}.rl small{color:var(--ink-muted);font-size:13px}
 .ft{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}.ft div{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .btn{height:44px;padding:0 24px;border-radius:var(--radius-sm);font:500 15px var(--font-sans);letter-spacing:.04em;display:inline-flex;align-items:center;cursor:pointer;text-decoration:none;border:1px solid var(--line-strong);background:var(--surface-raised);color:var(--ink)}
 .btn.p{background:var(--ai);border-color:var(--ai);color:var(--on-ai)}.btn.o{border-color:var(--ai);color:var(--ai)}
@@ -220,6 +221,17 @@ function toks(st){var box=st.querySelector('.tokens');if(!box)return;box.innerHT
 function cur(){var m=(location.hash||'#/1').match(/(\\d+)/);return m?+m[1]:1}
 function next(){location.hash='#/'+Math.min(n,cur()+1)}
 addEventListener('hashchange',function(){go(cur())});go(cur());
+(function(){var cs=document.querySelector('.step.compose');if(!cs)return;var K=cs.dataset.dk,ta=cs.querySelector('textarea'),ss;
+ function rd(){try{return JSON.parse(sessionStorage.getItem(K)||'null')}catch(x){return null}}
+ function wr(o){try{sessionStorage.setItem(K,JSON.stringify(o))}catch(x){}}
+ function sel(t,v){var m=cs.querySelector('.mi['+t+'="'+v+'"]');if(m)m.setAttribute('aria-selected','true')}
+ var d=K?rd():null;if(d){if(d.t){ta.value=d.t;ta.dispatchEvent(new Event('input',{bubbles:true}))}if(d.w)sel('data-tok',d.w);(d.s||[]).forEach(function(v){sel('data-stok',v)})}
+ if(cs.dataset.pre)sel('data-tok',cs.dataset.pre);
+ toks(cs);
+ if(K){var save=function(){var w=cs.querySelector('.mi[data-tok][aria-selected=true]');wr({t:ta.value,w:w?w.dataset.tok:'',s:[].map.call(cs.querySelectorAll('.mi[data-stok][aria-selected=true]'),function(x){return x.dataset.stok})})};
+  cs.addEventListener('input',save);cs.addEventListener('click',function(){setTimeout(save,0)});
+  cs.querySelector('.send').addEventListener('click',function(){window._kgDone=K},true)}})();
+
 document.addEventListener('input',function(e){var t=e.target;if(t.classList.contains('newname')||t.classList.contains('newscene')){toks(t.closest('.step'));return}if(t.tagName!=='TEXTAREA')return;t.style.height='auto';t.style.height=Math.min(t.scrollHeight,168)+'px';var b=t.closest('.composer').querySelector('.send');if(b&&!b.hasAttribute('data-busy'))b.disabled=!t.value.trim()});
 document.addEventListener('keydown',function(e){if(e.target.tagName==='TEXTAREA'&&(e.metaKey||e.ctrlKey)&&e.key==='Enter'){var b=e.target.closest('.composer').querySelector('.send');if(b&&!b.disabled)b.click()}});
 document.addEventListener('click',function(e){
@@ -239,7 +251,7 @@ document.addEventListener('click',function(e){
  if(a){e.preventDefault();var d=JSON.parse(a.dataset.fields||'{}'),st=a.closest('.step'),ch=st.querySelector('.opt[aria-checked=true]'),ta=st.querySelector('textarea');
   if(ch)d.choice=[].indexOf.call(ch.parentNode.children,ch);var sp=[].map.call(st.querySelectorAll('.mi[data-stok][aria-selected=true]'),function(x){return x.dataset.stok});if(sp.length)d.scenes=sp.join(',');var ns=st.querySelector('.newscene');if(ns&&!ns.hidden&&ns.value.trim())d.newscene=ns.value.trim();var pc=st.querySelector('.mi[data-tok][aria-selected=true]');if(pc)d.who=pc.dataset.tok;var nn=st.querySelector('.newname');if(nn&&!nn.hidden&&nn.value.trim())d.newname=nn.value.trim();var cks=st.querySelectorAll('.opt[role=checkbox]');if(cks.length)d.ids=[].filter.call(cks,function(x){return x.getAttribute('aria-checked')==='true'}).map(function(x){return x.dataset.id}).join(',');if(ta)d.text=ta.value;if(a.hasAttribute('data-once')&&a.disabled)return;a.disabled=true;a.setAttribute('data-busy','1');a.setAttribute('aria-busy','true');if(!a.classList.contains('send')){a.dataset.t=a.textContent;a.textContent='处理中…'}else{a.innerHTML=SPIN}
   fetch(a.dataset.act,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(d)}).then(function(r){
-   if(!r.ok)throw 0;if(a.hasAttribute('data-once')){a.textContent='已记下'}else{location.href='/'}}).catch(function(){a.disabled=false;a.removeAttribute('aria-busy');a.removeAttribute('data-busy');if(a.classList.contains('send')){a.innerHTML=ARROW;a.title='没成功，再试一次'}else{a.textContent='没成功，再试一次'}});return}
+   if(!r.ok)throw 0;try{if(window._kgDone)sessionStorage.removeItem(window._kgDone)}catch(x){}if(a.hasAttribute('data-once')){a.textContent='已记下'}else{location.href='/'}}).catch(function(){a.disabled=false;a.removeAttribute('aria-busy');a.removeAttribute('data-busy');if(a.classList.contains('send')){a.innerHTML=ARROW;a.title='没成功，再试一次'}else{a.textContent='没成功，再试一次'}});return}
  if(e.target.closest('[data-next]')){e.preventDefault();next()}});
 document.addEventListener('keydown',function(e){var s=S[cur()-1];if(!s||e.target.tagName==='TEXTAREA')return;
  var k='ABCDEF'.indexOf(e.key.toUpperCase());var os=s.querySelectorAll('.opt');if(e.key.length===1&&k>=0&&os[k]){os[k].click();return}
@@ -249,7 +261,7 @@ document.addEventListener('keydown',function(e){var s=S[cur()-1];if(!s||e.target
 VARIANTS = [("classic", "l"), ("banded", "r"), ("dotted", "t"), ("ripple", "l"), ("tide", "r"), ("fade", "t")]
 
 
-def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAND, library_href: str = "", head_extra: str = "", banner: str = "", say_href: str = "", notice: str = "") -> str:
+def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAND, library_href: str = "", head_extra: str = "", banner: str = "", say_href: str = "", notice: str = "", people_href: str = "", pre_who: str = "", draft_key: str = "") -> str:
     T = rd.t if rd is not None else (lambda x: x)
     e = lambda x: E(T(str(x)))  # noqa: E731  动态内容：遮挡时不输出原文
     masked = bool(rd is not None and rd.masked)
@@ -267,7 +279,8 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
         art = pattern(variant, 560 if side != "t" else 1440, 900 if side != "t" else 230, uid=str(i),
                       ground="var(--kon)" if dark else "var(--surface)")
         say = f"<a class='btn q say' href='{E(say_href)}'>记一句</a>" if say_href else ""
-        hd = f"<div class='hd'><span class='brand'>{mark_svg(32)}{BRAND}</span><span class='hr'>{say}{steps_dots(i + 1, total)}</span></div>"
+        ppl = f"<a class='btn q' href='{E(people_href)}'>人物</a>" if people_href else ""
+        hd = f"<div class='hd'><span class='brand'>{mark_svg(32)}{BRAND}</span><span class='hr'>{ppl}{say}{steps_dots(i + 1, total)}</span></div>"
         cue = f"<div class='cue'>{e(s['cue'])}</div>" if s.get("cue") else ""
         def actattr(a):  # 这一步的“继续”要先把选择提交给服务：{"url": "/confirm", "fields": {...}}
             if not a:
@@ -291,6 +304,13 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
                 + "</span></button>" for it in s["items"])
             core = f"{cue}<h1>{e(s['q'])}</h1><div class='opts' role='group' aria-label='选项'>{os_}</div>"
             ft = f"<div class='ft'><span class='mut'>取消勾选的不记</span><button type='button' class='btn p' data-next{actattr(s.get('act'))}>记下所选</button></div>"
+        elif s["kind"] == "receipt":  # 记完的回执：关联到谁、可打开档案；解读是可选的下一步，完成不依赖它
+            ls = "".join(f"<a class='rl' href='{E(h)}'><span>{e(n_)}</span><small>打开档案</small></a>" for n_, h, _ in s.get("links", []))
+            core = (f"{cue}<h1>{e(s['title'])}</h1>" + (f"<div class='rls'>{ls}</div>" if ls else "")
+                    + (f"<p class='why' style='margin-top:16px;font-size:14px'>{e(s['note'])}</p>" if s.get("note") else ""))
+            rd_btn = f"<button type='button' class='btn p'{actattr(s.get('act'))}>看解读</button>" if s.get("can_read") else ""
+            done_cls = "q" if rd_btn else "p"
+            ft = f"<div class='ft'><div>{rd_btn}<button type='button' class='btn {done_cls}'{actattr(s.get('done'))}>完成</button></div></div>"
         elif s["kind"] == "reading":
             lis = "".join(f"<li><i class='mk-model' aria-hidden='true'></i><span>{e(x['statement'])}<small>{e(x['evidence'])}</small></span></li>"
                           for x in s["items"])
@@ -317,7 +337,7 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
                     "<svg viewBox='0 0 24 24' width='20' height='20' fill='none' stroke='currentColor' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'><path d='M12 19V5M5 12l7-7 7 7'/></svg></button>")
             hero = pattern("fade", 1440, 240, uid=str(i), ground="var(--surface)")
             secs.append(
-                f"<section class='step compose' aria-label='第 {i + 1} 步'><div class='hero' aria-hidden='true'>{hero}</div><div class='glow' aria-hidden='true'></div>"
+                f"<section class='step compose' aria-label='第 {i + 1} 步' data-pre='{E(pre_who)}' data-dk='{E(draft_key)}'><div class='hero' aria-hidden='true'>{hero}</div><div class='glow' aria-hidden='true'></div>"
                 f"<div class='cbody'>{hd}<div class='stage'><span class='bigmark'>{mark_svg(60)}</span>{cue}<h1>{e(s['q'])}</h1></div>"
                 f"<div class='dock'>{sk}{menus}<div class='composer'><div class='tokens' aria-live='polite'></div>"
                 f"<textarea rows='1' aria-label='你的回答' placeholder='按你记得的说就行，原话越接近越好'></textarea>"

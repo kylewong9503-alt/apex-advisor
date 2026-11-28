@@ -838,6 +838,10 @@ def test_r6_batch_with_two_people_is_read_per_person(tmp_path):
         pend = s.app.lock.store.drafts(status="pending")
         msg = pend[0]["message_id"]
         req(s, "POST", "/confirm_many", f"msg={msg}&ids={','.join(d['id'] for d in pend)}", headers=ck)
+        assert len(model.prompts) == 1  # 还没点“看解读”：不调用模型
+        req(s, "POST", "/reading/start", headers=ck)
+        assert "先看谁的" in req(s, "GET", "/", headers=ck)[2]
+        req(s, "POST", "/reading/who", "choice=0", headers=ck)
         assert "F 发了邮件" in model.prompts[1] and "M 拒绝了预算" not in model.prompts[1]  # 一次只读一个人
         for _ in range(2):  # 两个人各走一遍：看 → 选第 2 个 → 留意第 1 个
             req(s, "POST", "/reading/next", headers=ck); req(s, "POST", "/reading/pick", "choice=1", headers=ck)

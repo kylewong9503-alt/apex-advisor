@@ -533,6 +533,10 @@ def test_after_confirming_a_record_the_flow_continues_with_a_reading(tmp_path):
         req(s, "POST", "/say", "text=" + quote(READ_TEXT), headers=ck)
         did = s.app.lock.store.drafts(status="pending")[0]["id"]
         assert req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)[0] == 303
+        rc = req(s, "GET", "/", headers=ck)[2].split("<script>")[0]
+        assert "已记下" in rc and "打开档案" in rc and "/person/" in rc and "看解读" in rc  # 先给回执
+        assert "几种说得通的解释" not in rc and not s.app.model.prompts[1:]  # 解读要点了才算（模型没被调用）
+        assert req(s, "POST", "/reading/start", headers=ck)[0] == 303
         body = req(s, "GET", "/", headers=ck)[2]
         assert "几种说得通的解释" in body and "她在为某个汇报找素材" in body and "她想试探我手上" in body
         assert "她编造的依据" in body and "原话里根本没有这句" not in body  # 模型改写的依据不采信：用整句原话代替
@@ -846,7 +850,34 @@ def test_receipt_says_why_there_is_no_reading(tmp_path):
         req(s, "POST", "/say", "text=" + quote(READ_TEXT), headers=ck)
         did = s.app.lock.store.drafts(status="pending")[0]["id"]
         req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)
+        req(s, "POST", "/reading/start", headers=ck)
         body = req(s, "GET", "/", headers=ck)[2].split("<script>")[0]
         assert "这次没有给出解读：" in body and "模型没给出合格的解读" in body  # 不再悄悄跳过
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_people_list_profile_and_preselected_say(tmp_path):
+    s = _reading_server(tmp_path, [READ_OUT])
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote(READ_TEXT), headers=ck)
+        did = s.app.lock.store.drafts(status="pending")[0]["id"]
+        req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)
+        home = req(s, "GET", "/", headers=ck)[2]
+        assert "href='/people'" in home  # 首页有“人物”入口
+        pl = req(s, "GET", "/people", headers=ck)[2]
+        assert "/person/" in pl and "1 条记录" in pl
+        href = pl.split("/person/")[1].split("'")[0]
+        pr = req(s, "GET", "/person/" + href, headers=ck)
+        assert pr[0] == 200 and "/say?who=" + href in pr[2]
+        assert req(s, "GET", "/person/bogus", headers=ck)[0] == 404
+        sy = req(s, "GET", "/say?who=" + href, headers=ck)[2]
+        assert f"data-pre='{href}'" in sy
+        assert "data-pre=''" in req(s, "GET", "/say?who=bogus", headers=ck)[2]  # 令牌对不上：不预选
+        s.app.masked = True
+        mp = req(s, "GET", "/people", headers=ck)[2]
+        assert "data-dk=''" in req(s, "GET", "/say", headers=ck)[2]  # 遮挡时不在浏览器里留草稿
+        assert "F" not in mp.split("<main>")[1].replace("Fira", "")  # 人名不出现
     finally:
         s.shutdown(); s.server_close()

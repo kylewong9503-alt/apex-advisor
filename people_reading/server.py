@@ -178,18 +178,39 @@ class App:
         for d, _ in refs:
             lab = KIND_LABEL.get(d["proposed"].get("target_table") if d["proposed"].get("target_table") not in (None, "observation") else d["proposed"].get("kind"), "其他")
             counts[lab] = counts.get(lab, 0) + 1
-        self.reading = {"counts": counts, "stage": "receipt", "items": None, "pid": None, "quote": "", "picked": None}
-        self.reading["why"] = ""
+        self.reading = {"counts": counts, "stage": "receipt", "items": None, "pid": None, "quote": "", "picked": None, "why": ""}
         by_person: dict = {}
         for o in obs:  # 按观察的主体分组：每个人单独读，不把几个人的话拼在一起
             if o.subject_person_id and o.subject_person_id != SELF_ID and not o.is_interpretation:
                 by_person.setdefault(o.subject_person_id, []).append(o.content)
         self.reading["queue"] = [(pid, " … ".join(cs)) for pid, cs in by_person.items()]
+        self.reading["people"] = list(by_person)  # 回执里“打开档案”用；不依赖模型是否成功
         if not by_person:
             self.reading["why"] = ("这一轮记下的里没有“关于某个人的所见所闻”（你的看法、计划、承诺不做事件解读）。"
                                    "想让我解读，可以在输入框里用 @ 选一个人再说。")
-        elif not self._load_next_reading():
-            print(f"[reading] 没有解读：{self.reading['why']}", file=__import__("sys").stderr, flush=True)
+
+    def reading_start(self) -> None:
+        """回执上的“看解读”：这时才调用模型。多人时先问先看谁；模型给不出就留在回执并说明原因。"""
+        r = self.reading
+        if r is None or r["stage"] != "receipt":
+            raise KeyError("reading")
+        if len(r["queue"]) > 1 and not r.get("chosen"):
+            r["stage"] = "who"
+            return
+        if not self._load_next_reading():
+            self.notice = "这次没有给出解读：" + (r["why"] or "模型没有给出可用的解释") + "。"
+            print(f"[reading] 没有解读：{r['why']}", file=__import__("sys").stderr, flush=True)
+            r["stage"] = "receipt"
+            r["tried"] = True
+
+    def reading_who(self, choice: str) -> None:
+        r = self.reading
+        if r is None or r["stage"] != "who" or not choice.isdigit() or int(choice) >= len(r["queue"]):
+            raise KeyError("who")
+        r["queue"].insert(0, r["queue"].pop(int(choice)))
+        r["chosen"] = True
+        r["stage"] = "receipt"
+        self.reading_start()
 
     def _load_next_reading(self) -> bool:
         """取队列里下一个能读出东西的人；都读完（或模型给不出）返回 False。"""
@@ -221,6 +242,17 @@ class App:
             opts = [(x["signal"], "", "不用问对方，零代价") for x in r["items"]] + [("先放着", "", "")]
             return [ask("想让我替你留意哪一个现象？", opts, cue="以后遇到时我会提醒你", selected=None, act=n("/reading/signal"))]
         tail = "；".join(f"{v} 条{k}" for k, v in r["counts"].items())
+        if r["stage"] == "who":
+            w = self._world()
+            return [ask("先看谁的？", [(w.persons[pid].display_name, "", "") for pid, _ in r["queue"]], cue="几个人都有新记录", selected=None,
+                        act=n("/reading/who"))]
+        if r["stage"] == "receipt":
+            w = self._world()
+            links = [(w.persons[pid].display_name, "/person/" + self.tok("who", pid), pid) for pid in r.get("people", []) if pid in w.persons]
+            can = bool(r["queue"])
+            return [{"kind": "receipt", "cue": "已记下", "title": tail, "links": links,
+                     "note": "" if can else (r["why"] or ""), "can_read": can,
+                     "act": n("/reading/start"), "done": n("/reading/done")}]
         extra = "。留意的现象已加入待办，下次再说到相关的人或事时会提醒你。" if r.get("watched") else "。"
         why = f"这次没有给出解读：{r['why']}。" if r.get("why") and not r.get("watched") and r.get("picked") is None else ""
         return [{"kind": "result", "cue": "已归档", "title": f"已记下：{tail}", "big": "", "big_note": "",
@@ -331,7 +363,7 @@ class App:
                 steps[-1]["buttons"] = btns
         steps = steps or [self._say_step("今天想记一件什么事？", "直接说；用 @ 选谁、# 选场合", rd)]
         return render_flow(steps, rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner(), notice=self._take_notice(),
-                           say_href="" if steps[0]["kind"] == "open" else "/say")
+                           say_href="" if steps[0]["kind"] == "open" else "/say", people_href="/people", draft_key="" if self.masked else "kg.draft")
 
     def _take_notice(self) -> str:
         n, self.notice = self.notice, ""
@@ -390,11 +422,50 @@ class App:
     def _say_step(self, q: str, cue: str, rd) -> dict:
         return open_ask(q, cue=cue, act={"url": "/say", "fields": {}}, people=self.people_chips(rd), scenes=self.scene_chips(rd))
 
-    def say_html(self) -> str:
-        """随时记一句：不论现在在哪个流程里。"""
+    def say_html(self, who: str = "") -> str:
+        """随时记一句：不论现在在哪个流程里。who：从某人的档案页进来时预选的人（令牌，对不上就当没选）。"""
         rd = Redactor(self._world(), "masked" if self.masked else "code")
         step = self._say_step("想记一件什么事？", "直接说；用 @ 选谁、# 选场合", rd)
-        return render_flow([step], rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner())
+        if who and who not in {t for t, _ in step["people"]}:
+            who = ""
+        return render_flow([step], rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner(), people_href="/people",
+                           pre_who=who, draft_key="" if self.masked else "kg.draft")
+
+    def _page(self, title: str, body: str) -> str:
+        from .privacy import NO_CAPTURE_META, PRINT_GUARD_CSS
+        from .theme import BASE_CSS, mark_data_uri
+        css = (BASE_CSS + "main{padding-top:var(--space-4)}.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-6)}"
+               ".pl{display:flex;justify-content:space-between;align-items:center;min-height:52px;border-top:1px solid var(--line);color:var(--ink);text-decoration:none}"
+               ".pl small{color:var(--ink-muted)}input.q{margin-bottom:var(--space-4)}")
+        return (f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                f"<title>{E(BRAND)}</title>{NO_CAPTURE_META}<link rel='icon' href='{mark_data_uri()}'>{FONT_LINK}{HEAD_EXTRA}"
+                f"<style>{css}{PRINT_GUARD_CSS}</style></head><body><main><div class='top'><a href='/'>← 回到记一句</a><a href='/library'>关系图</a></div>"
+                f"{body}</main></body></html>")
+
+    def people_html(self) -> str:
+        """人物列表：最近有记录的在前；点进去是档案，可直接“记一件与此人有关的事”。"""
+        w = self._world()
+        rd = Redactor(w, "masked" if self.masked else "code")
+        last: dict = {}
+        for o in w.observations.values():
+            last[o.subject_person_id] = max(last.get(o.subject_person_id, 0), int(o.id.lstrip("O") or 0) if o.id.lstrip("O").isdigit() else 0)
+        people = [p for p in w.persons.values() if not p.is_self and not p.is_placeholder and not p.merged_into_id]
+        people.sort(key=lambda p: -last.get(p.id, -1))
+        rows = "".join(f"<a class='pl' href='/person/{E(self.tok('who', p.id))}'><span>{E(rd.p(p.id) if self.masked else p.display_name)}</span>"
+                       f"<small>{sum(1 for o in w.observations.values() if o.subject_person_id == p.id)} 条记录</small></a>" for p in people)
+        return self._page("人物", "<h1>人物</h1>" + (rows or "<p class='mut'>还没有人。先记一句，用 @ 选一个人。</p>"))
+
+    def person_html(self, tok: str) -> str:
+        from .profile import build_profile, render_html as render_profile
+        w = self._world()
+        pid = next((p.id for p in w.persons.values() if not p.is_self and not p.is_placeholder and not p.merged_into_id
+                    and hmac.compare_digest(self.tok("who", p.id), tok)), None)
+        if pid is None:
+            raise KeyError("who")
+        rd = Redactor(w, "masked" if self.masked else "code")
+        pf = build_profile(w, pid, self.lock.store)
+        head = f"<p><a class='btn p' style='display:inline-block;text-decoration:none;padding:8px 16px' href='/say?who={E(tok)}'>记一件与此人有关的事</a></p>"
+        return self._page("档案", head + render_profile(pf, rd))
 
     def library_html(self) -> str:
         store = self.lock.store
@@ -806,7 +877,15 @@ def make_handler(app: App):
                     return self._send(200, body)
                 if path == "/say":
                     with app.mutex:
-                        body = app.say_html()
+                        body = app.say_html((parse_qs(urlsplit(self.path).query).get("who") or [""])[0])
+                    return self._send(200, body)
+                if path == "/people":
+                    with app.mutex:
+                        body = app.people_html()
+                    return self._send(200, body)
+                if path.startswith("/person/"):
+                    with app.mutex:
+                        body = app.person_html(path[len("/person/"):])
                     return self._send(200, body)
                 if path == "/library":
                     with app.mutex:
@@ -814,6 +893,8 @@ def make_handler(app: App):
                     return self._send(200, body)
             except Locked:
                 return self._redirect("/unlock")
+            except KeyError:
+                return self._send(404, "not found", "text/plain")
             return self._send(404, "not found", "text/plain")
 
         def do_POST(self):
@@ -866,6 +947,10 @@ def make_handler(app: App):
                     elif path in ("/reading/next", "/reading/pick", "/reading/signal"):
                         app.reading_next({"/reading/next": "view", "/reading/pick": "pick", "/reading/signal": "signal"}[path],
                                          (form.get("choice") or [""])[0])
+                    elif path == "/reading/start":
+                        app.reading_start()
+                    elif path == "/reading/who":
+                        app.reading_who((form.get("choice") or [""])[0])
                     elif path == "/reading/done":
                         app.reading_done()
                     elif path == "/lock/start":
