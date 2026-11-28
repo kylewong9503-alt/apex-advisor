@@ -1053,12 +1053,20 @@ def test_watch_answer_is_bound_to_the_item_shown_and_old_followups_are_checked(t
         did = s.app.lock.store.drafts(status="pending")[0]["id"]
         req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)
         r = s.app.reading
+        page = req(s, "GET", "/", headers=ck)[2].split("<script>")[0]
+        assert "关于F" in page and "现象1" in page and "新记录：“F 突然跟我要 A 和 B 的合作”" in page  # 说明在核对谁、哪条记录
+        assert "与此无关 / 不确定" in page
         assert r["stage"] == "watch" and [c["fid"] for c in r["checks"]] == ["F1", "F2"]  # 旧格式也进入核对
         k1 = s.app.tok("watch", "F1", r["checks"][0]["now"])
         assert req(s, "POST", "/reading/watch", f"choice=0&k={k1}", headers=ck)[0] == 303
         assert req(s, "POST", "/reading/watch", f"choice=0&k={k1}", headers=ck)[0] == 409  # 重复提交同一题：不会写到第二条
         st = {f.id: f.status for f in s.app.w.followups if f.kind == "watch"}
         assert st == {"F1": "seen", "F2": "open"}
+        now = r["checks"][0]["now"]
+        assert s.app.w.interactions[now]["checks"] == [{"fid": "F1", "answer": "seen"}]  # 旧格式也留下是哪次记录核对的
+        s.app.lock.store.sync_world(s.app.w)
+        w2, _ = s.app.lock.store.load_world()
+        assert w2.interactions[now]["checks"] == [{"fid": "F1", "answer": "seen"}]  # 重开后还在
     finally:
         s.shutdown(); s.server_close()
 

@@ -295,7 +295,7 @@ def render_flow(steps: list, *, rd: Optional[Redactor] = None, title: str = BRAN
                 f"<span class='k' aria-hidden='true'>{KEYS[k] if k < len(KEYS) else k + 1}</span><span>"
                 + (f"<i class='{MARKS[o['mark']]}' aria-hidden='true'></i>" if o["mark"] else "") + f"{e(o['text'])}"
                 + (f"<small>{e(o['sub'])}</small>" if o["sub"] else "") + "</span></button>" for k, o in enumerate(s["options"]))
-            core = f"{cue}<h1>{e(s['q'])}</h1><div class='opts' role='radiogroup' aria-label='选项'>{os_}</div>"
+            core = f"{cue}<h1>{e(s['q']).replace(chr(10), '<br>')}</h1><div class='opts' role='radiogroup' aria-label='选项'>{os_}</div>"
             ft = f"<div class='ft'>{skip}<button type='button' class='btn p' data-next{actattr(s.get('act'))}{'' if s['selected'] is not None else ' disabled'}>继续　↵</button></div>"
         elif s["kind"] == "check":
             os_ = "".join(

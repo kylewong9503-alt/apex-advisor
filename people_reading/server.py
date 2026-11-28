@@ -182,11 +182,13 @@ class App:
         by_person: dict = {}
         iids: dict = {}
         allit: dict = {}
+        said: dict = {}
         for o in obs:  # 按观察的主体分组：每个人单独读，不把几个人的话拼在一起
             if o.subject_person_id and o.subject_person_id != SELF_ID and not o.is_interpretation:
                 by_person.setdefault(o.subject_person_id, []).append(o.content)
                 iids.setdefault(o.subject_person_id, o.interaction_id)
                 allit.setdefault(o.subject_person_id, []).append(o.interaction_id)
+                said.setdefault((o.subject_person_id, o.interaction_id), []).append(o.content)
         self.reading["queue"] = [(pid, " … ".join(cs), iids[pid]) for pid, cs in by_person.items()]
         self.reading["people"] = list(by_person)  # 回执里“打开档案”用；不依赖模型是否成功
         w0, chk = self._world(), []  # 这些人以前留下的、还没核对的“留意项”：这次新记录是核对的机会
@@ -200,7 +202,8 @@ class App:
                 continue
             fresh = [i for i in allit[wt["pid"]] if i != iid0]  # 必须来自另一件事：补记原事件的内容不能验证原事件
             if fresh:
-                chk.append({"fid": wt["fid"], "pid": wt["pid"], "signal": wt["signal"], "statement": wt["statement"], "src": iid0, "now": fresh[0]})
+                chk.append({"fid": wt["fid"], "pid": wt["pid"], "signal": wt["signal"], "statement": wt["statement"], "src": iid0, "now": fresh[0],
+                            "quote": " … ".join(said[(wt["pid"], fresh[0])])})
         self.reading["checks"] = chk
         if chk:
             self.reading["stage"] = "watch"
@@ -233,6 +236,7 @@ class App:
         if choice != "2":
             fu = next(f for f in w.followups if f.id == c["fid"])
             fu.status = "seen" if choice == "0" else "not_seen"
+            w.interactions[c["now"]].setdefault("checks", []).append({"fid": c["fid"], "answer": fu.status})  # 来源未知（旧格式）时也留下是哪次记录核对的
             for wt in w.interactions.get(c["src"], {}).get("watch", []):
                 if wt["fid"] == c["fid"]:
                     wt["resolved"] = {"answer": fu.status, "by_interaction": c["now"]}  # 留下是哪次记录核对的
@@ -287,7 +291,10 @@ class App:
         tail = "；".join(f"{v} 条{k}" for k, v in r["counts"].items())
         if r["stage"] == "watch":
             c = r["checks"][0]
-            return [ask(f"上次说要留意：{c['signal']}。这次的记录里出现了吗？", [("出现了", "", ("对应的解释：" + c["statement"]) if c["statement"] else ""), ("没出现", "", ""), ("还不确定", "", "继续留着")],
+            who = self._world().persons[c["pid"]].display_name
+            return [ask(f"关于{who}：上次说要留意“{c['signal']}”。这条新记录里出现了吗？\n新记录：“{c['quote']}”",
+                        [("出现了", "", ("对应的解释：" + c["statement"]) if c["statement"] else ""), ("这条里没出现", "", "只按这一条记录判断"),
+                         ("与此无关 / 不确定", "", "继续留着，下次再核对")],
                         cue="有一条待核对的观察", selected=None, act={"url": "/reading/watch", "fields": {"k": self.tok("watch", c["fid"], c["now"])}})]
         if r["stage"] == "who":
             w = self._world()
