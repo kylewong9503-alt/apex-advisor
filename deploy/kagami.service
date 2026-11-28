@@ -1,0 +1,18 @@
+[Unit]
+Description=Kagami
+After=network.target
+
+[Service]
+User=kagami
+WorkingDirectory=/opt/kagami
+# 口令不放在这里：在浏览器里输入。模型与密钥放在 /etc/kagami.env（权限 600），不要提交到仓库
+EnvironmentFile=-/etc/kagami.env
+ExecStart=/opt/kagami/venv/bin/python -m people_reading.server --db /var/lib/kagami/kagami.db --host 127.0.0.1 --port 8765 --allow-host __DOMAIN__
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/kagami
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
