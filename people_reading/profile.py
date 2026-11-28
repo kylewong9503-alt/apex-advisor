@@ -76,11 +76,14 @@ def build_profile(w: World, person_id: str, store=None) -> dict:
     # 5 互动时间线，可点回原话
     timeline = []
     for iid, it in sorted(w.interactions.items(), key=lambda kv: kv[1].get("day", 0)):
-        obs = [o for o in w.observations.values() if o.interaction_id == iid and person_id in (o.subject_person_id, o.reporter_id)]
+        obs = [o for o in w.observations.values() if o.interaction_id == iid and person_id in (o.subject_person_id, o.reporter_id, *o.involved)]
         if not obs:
             continue
-        timeline.append({"interaction": iid, "scenes": list(it.get("scenes", [])), "label": it.get("label", ""), "day": it.get("day", 0), "day_label": fmt_day(it.get("day", 0)), "observations": [
-            {"id": o.id, "kind": o.kind, "reporter": w.persons[o.reporter_id].display_name if o.reporter_id in w.persons else o.reporter_id,
+        timeline.append({"interaction": iid, "scenes": list(it.get("scenes", [])), "label": it.get("label", ""), "day": it.get("day", 0), "day_label": fmt_day(it.get("day", 0)), "facts": [dict(f) for f in it.get("facts", [])],
+             "people": sorted({w.persons[x].display_name for o in obs for x in (o.subject_person_id, o.reporter_id, *o.involved) if x in w.persons and x != SELF}),
+             "observations": [
+            {"id": o.id, "subject_id": o.subject_person_id, "kind": o.kind, "reporter": w.persons[o.reporter_id].display_name if o.reporter_id in w.persons else o.reporter_id,
+             "subject": w.persons[o.subject_person_id].display_name if o.subject_person_id in w.persons else o.subject_person_id,
              "content": o.content, "interpretation": o.is_interpretation,
              "mode": "当时记录" if o.source_mode == "contemporaneous" else "事后回忆",
              "quotes": [_quote(store, s) for s in o.source_spans]} for o in obs]})
@@ -141,7 +144,10 @@ def render_html(pf: dict, rd=None) -> str:
         tags = "".join(f" <span class='tag'>#{e(s)}</span>" for s in t.get("scenes", []))
         for o in t["observations"]:
             q = "；".join(o["quotes"])
-            tl.append((idx, e(f"{t['day_label']} {t['label']}｜{o['mode']}｜{o['reporter']}：{o['content']}") + tags +
+            who = f"｜说的是：{o['subject']}" if o["subject_id"] != pf["header"]["id"] else ""
+            fx = "".join(f"<br><span class='mut'>补充事实：{e(f['q'])} → {e(f['a'])}</span>" for f in t.get("facts", []))
+            co = f"<br><span class='mut'>同一件事还涉及：{e('、'.join(t['people']))}</span>" if len(t.get("people", [])) > 1 else ""
+            tl.append((idx, e(f"{t['day_label']} {t['label']}｜{o['mode']}｜{o['reporter']}{who}：{o['content']}") + tags + fx + co +
                        (" <span class='mut'>[解读]</span>" if o["interpretation"] else "") + f"<br><span class='mut' data-evidence='{e(q)}'>原话：{e(q)}</span>"))
     bar = ("<div class='sfilter' role='group' aria-label='按场景筛选'>" + "".join(
         f"<button type='button' class='sfb' aria-pressed='false' data-sf='{i}'>#{e(n)}</button>" for i, n in enumerate(scene_names)) + "</div>") if scene_names else ""

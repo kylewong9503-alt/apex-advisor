@@ -180,10 +180,12 @@ class App:
             counts[lab] = counts.get(lab, 0) + 1
         self.reading = {"counts": counts, "stage": "receipt", "items": None, "pid": None, "quote": "", "picked": None, "why": ""}
         by_person: dict = {}
+        iids: dict = {}
         for o in obs:  # 按观察的主体分组：每个人单独读，不把几个人的话拼在一起
             if o.subject_person_id and o.subject_person_id != SELF_ID and not o.is_interpretation:
                 by_person.setdefault(o.subject_person_id, []).append(o.content)
-        self.reading["queue"] = [(pid, " … ".join(cs)) for pid, cs in by_person.items()]
+                iids.setdefault(o.subject_person_id, o.interaction_id)
+        self.reading["queue"] = [(pid, " … ".join(cs), iids[pid]) for pid, cs in by_person.items()]
         self.reading["people"] = list(by_person)  # 回执里“打开档案”用；不依赖模型是否成功
         if not by_person:
             self.reading["why"] = ("这一轮记下的里没有“关于某个人的所见所闻”（你的看法、计划、承诺不做事件解读）。"
@@ -217,13 +219,15 @@ class App:
         from . import skillset as K
         r, w = self.reading, self._world()
         while r.get("queue"):
-            pid, text = r["queue"].pop(0)
+            pid, text, iid = r["queue"].pop(0)
             diag: list = []
-            items = K.read_event(self.model, text, person_name=w.persons[pid].display_name, diag=diag)
+            meta: dict = {}
+            items = K.read_event(self.model, text, person_name=w.persons[pid].display_name, diag=diag, meta=meta)
             if diag:
                 r["why"] = "；".join(diag)
             if items:
-                r.update(stage="view", items=items, pid=pid, quote=text, picked=None)
+                r.update(stage="fact" if meta.get("missing_fact") else "view", items=items, pid=pid, quote=text, picked=None,
+                         iid=iid, fact=meta.get("missing_fact"))
                 return True
         return False
 
@@ -232,6 +236,10 @@ class App:
         if r is None:
             return []
         n = lambda u: {"url": u, "fields": {}}  # noqa: E731
+        if r["stage"] == "fact":
+            f = r["fact"]
+            return [ask(f["question"], [(o, "", "") for o in f["options"]] + [("记不清", "", "")], cue="补一个事实，解读会更准（可跳过）",
+                        selected=None, act=n("/reading/fact"))]
         if r["stage"] == "view":
             return [{"kind": "reading", "cue": "你刚记下的", "title": "先这样看：几种说得通的解释", "quote": r["quote"], "items": r["items"],
                      "note": "这只是几种都说得通的解释，现在还分不出哪种更对；它们不算证据，也不会计入任何比较。", "act": n("/reading/next")}]
@@ -244,7 +252,7 @@ class App:
         tail = "；".join(f"{v} 条{k}" for k, v in r["counts"].items())
         if r["stage"] == "who":
             w = self._world()
-            return [ask("先看谁的？", [(w.persons[pid].display_name, "", "") for pid, _ in r["queue"]], cue="几个人都有新记录", selected=None,
+            return [ask("先看谁的？", [(w.persons[pid].display_name, "", "") for pid, *_ in r["queue"]], cue="几个人都有新记录", selected=None,
                         act=n("/reading/who"))]
         if r["stage"] == "receipt":
             w = self._world()
@@ -264,7 +272,16 @@ class App:
         if r is None or r["stage"] != expect:
             raise KeyError("reading")
         st = r["stage"]
-        if st == "view":
+        if st == "fact":
+            f = r["fact"]
+            if not choice.isdigit() or int(choice) > len(f["options"]):
+                raise KeyError("fact")
+            i, w = int(choice), self._world()
+            if i < len(f["options"]) and r.get("iid") in w.interactions:  # 答案存在这次互动上，不进观察、不进比较
+                w.interactions[r["iid"]].setdefault("facts", []).append({"q": f["question"], "a": f["options"][i], "by": "user"})
+                self.lock.store.sync_world(w)
+            r["stage"] = "view"
+        elif st == "view":
             r["stage"] = "pick"
         elif st == "pick":
             if not choice.isdigit() or int(choice) > len(r["items"]):
@@ -464,7 +481,9 @@ class App:
             raise KeyError("who")
         rd = Redactor(w, "masked" if self.masked else "code")
         pf = build_profile(w, pid, self.lock.store)
-        head = f"<p><a class='btn p' style='display:inline-block;text-decoration:none;padding:8px 16px' href='/say?who={E(tok)}'>记一件与此人有关的事</a></p>"
+        nopen = sum(1 for f in w.followups if f.kind == "watch" and f.target_ref == pid and f.status == "open")
+        hint = f"<p class='mut'>有 {nopen} 条待核对的观察：下次记到这个人时留意。</p>" if nopen else ""
+        head = hint + f"<p><a class='btn p' style='display:inline-block;text-decoration:none;padding:8px 16px' href='/say?who={E(tok)}'>记一件与此人有关的事</a></p>"
         return self._page("档案", head + render_profile(pf, rd))
 
     def library_html(self) -> str:
@@ -944,8 +963,8 @@ def make_handler(app: App):
                         app.act(app.current_mid())
                     elif path == "/settle/start":
                         app.settle_start(app.current_mid())
-                    elif path in ("/reading/next", "/reading/pick", "/reading/signal"):
-                        app.reading_next({"/reading/next": "view", "/reading/pick": "pick", "/reading/signal": "signal"}[path],
+                    elif path in ("/reading/next", "/reading/pick", "/reading/signal", "/reading/fact"):
+                        app.reading_next({"/reading/fact": "fact", "/reading/next": "view", "/reading/pick": "pick", "/reading/signal": "signal"}[path],
                                          (form.get("choice") or [""])[0])
                     elif path == "/reading/start":
                         app.reading_start()

@@ -422,7 +422,8 @@ BUILTIN[READ_EVENT.skill] = READ_EVENT
 SYSTEM_READ = """用户刚记下一件事。给出 2–3 种都说得通、而且互相不同的解释，只输出 JSON：
 {"explanations":[{"statement": 一句话的解释（不推断性格或情绪，不下“他就是……”的结论，不出现原话里没有的人名和数字）,
                   "evidence": 原话里支持它的一段（逐字摘抄）,
-                  "signal": 以后能观察到、能分清它与其他解释的一个具体现象（不必问对方）}]}"""
+                  "signal": 以后能观察到、能分清它与其他解释的一个具体现象（不必问对方）}],
+ "missing_fact": 可选。如果缺一个事实就很难分清这些解释，问一个短问题：{"question": 一句话, "options": 2–3 个简短选项（不含原话里没有的数字）}；不缺就省略}"""
 
 
 def validate_read(d) -> list:
@@ -433,7 +434,7 @@ def validate_read(d) -> list:
             if not (isinstance(x, dict) and _s(x.get("statement")) and _s(x.get("evidence")) and _s(x.get("signal")))]
 
 
-def read_event(model, text: str, *, person_name: str = "", diag: Optional[list] = None) -> Optional[list]:
+def read_event(model, text: str, *, person_name: str = "", diag: Optional[list] = None, meta: Optional[dict] = None) -> Optional[list]:
     """返回 [{statement, evidence, signal}]；模型不可用、输出不合格、或可用的少于 2 条时返回 None（不编造）。
     diag：给了就把“为什么没有解读”的原因追加进去，页面上会告诉你，而不是悄悄跳过。
     校验：不得出现原话里没有的数字；不得用禁用词、越界说法、性格标签；解释不能重复。
@@ -460,6 +461,13 @@ def read_event(model, text: str, *, person_name: str = "", diag: Optional[list] 
         seen.add(s)
         span = find_span(text, ev)
         out.append({"statement": s, "evidence": text[span[0]:span[1]] if span else text, "signal": sg})
+    mf = d.get("missing_fact") if meta is not None else None
+    if isinstance(mf, dict) and isinstance(mf.get("question"), str) and isinstance(mf.get("options"), list):
+        q, ops = mf["question"].strip(), [o.strip() for o in mf["options"] if isinstance(o, str) and o.strip()]
+        ok = 0 < len(q) <= 60 and 2 <= len(ops) <= 3 and all(len(o) <= 30 for o in ops) and _clean(q + "".join(ops)) \
+            and not any(n not in nums for n in NUM.findall(q + "".join(ops)))
+        if ok:
+            meta["missing_fact"] = {"question": q, "options": ops}
     if len(out) < 2:
         why.append(f"模型给的解释里可用的不足 2 条（{dropped} 条含原话里没有的数字、性格标签或越界说法）")
         return None

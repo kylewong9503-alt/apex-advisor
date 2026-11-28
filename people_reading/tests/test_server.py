@@ -881,3 +881,63 @@ def test_people_list_profile_and_preselected_say(tmp_path):
         assert "F" not in mp.split("<main>")[1].replace("Fira", "")  # 人名不出现
     finally:
         s.shutdown(); s.server_close()
+
+
+def test_missing_fact_is_asked_before_explanations_and_stored_on_the_interaction(tmp_path):
+    out = dict(READ_OUT, missing_fact={"question": "她是当面说的还是发消息？", "options": ["当面", "消息"]})
+    s = _reading_server(tmp_path, [out])
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote(READ_TEXT), headers=ck)
+        did = s.app.lock.store.drafts(status="pending")[0]["id"]
+        req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)
+        req(s, "POST", "/reading/start", headers=ck)
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "她是当面说的还是发消息" in body and "记不清" in body and "几种说得通的解释" not in body
+        assert req(s, "POST", "/reading/next", headers=ck)[0] == 409  # 不能跳过这一步直接看解读
+        assert req(s, "POST", "/reading/fact", "choice=9", headers=ck)[0] == 409
+        assert req(s, "POST", "/reading/fact", "choice=1", headers=ck)[0] == 303
+        facts = [f for i in s.app.w.interactions.values() for f in i.get("facts", [])]
+        assert facts == [{"q": "她是当面说的还是发消息？", "a": "消息", "by": "user"}]
+        assert not any("消息" in o.content for o in s.app.w.observations.values())  # 补的事实不是观察
+        assert "几种说得通的解释" in req(s, "GET", "/", headers=ck)[2]
+        pr = req(s, "GET", "/person/" + req(s, "GET", "/people", headers=ck)[2].split("/person/")[1].split("'")[0], headers=ck)[2]
+        assert "补充事实：她是当面说的还是发消息？ → 消息" in pr
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_bad_missing_fact_is_ignored(tmp_path):
+    out = dict(READ_OUT, missing_fact={"question": "她花了 99 万吗？", "options": ["是", "否"]})  # 原话里没有的数字
+    s = _reading_server(tmp_path, [out])
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote(READ_TEXT), headers=ck)
+        did = s.app.lock.store.drafts(status="pending")[0]["id"]
+        req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)
+        req(s, "POST", "/reading/start", headers=ck)
+        assert "几种说得通的解释" in req(s, "GET", "/", headers=ck)[2]
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_profile_hints_open_watch_and_shows_other_people_in_the_same_event(tmp_path):
+    s = _reading_server(tmp_path, [READ_OUT])
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote(READ_TEXT), headers=ck)
+        did = s.app.lock.store.drafts(status="pending")[0]["id"]
+        req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)
+        req(s, "POST", "/reading/start", headers=ck); req(s, "POST", "/reading/next", headers=ck)
+        req(s, "POST", "/reading/pick", "choice=0", headers=ck); req(s, "POST", "/reading/signal", "choice=0", headers=ck)
+        tok = req(s, "GET", "/people", headers=ck)[2].split("/person/")[1].split("'")[0]
+        assert "有 1 条待核对的观察" in req(s, "GET", "/person/" + tok, headers=ck)[2]
+        o = next(iter(s.app.w.observations.values()))
+        # 同一件事还涉及另一个人：两边的档案都能看到这件事
+        from people_reading.world import Person
+        s.app.w.persons["G2"] = Person("G2", "第二位", code="G2")
+        o.involved = ["G2"]
+        pr = req(s, "GET", "/person/" + tok, headers=ck)[2]
+        assert "同一件事还涉及：F、G2" in pr  # 页面按“代号”显示（遮挡时是●序号）
+    finally:
+        s.shutdown(); s.server_close()
