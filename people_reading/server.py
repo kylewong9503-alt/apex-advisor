@@ -179,12 +179,17 @@ class App:
             lab = KIND_LABEL.get(d["proposed"].get("target_table") if d["proposed"].get("target_table") not in (None, "observation") else d["proposed"].get("kind"), "其他")
             counts[lab] = counts.get(lab, 0) + 1
         self.reading = {"counts": counts, "stage": "receipt", "items": None, "pid": None, "quote": "", "picked": None}
+        self.reading["why"] = ""
         by_person: dict = {}
         for o in obs:  # 按观察的主体分组：每个人单独读，不把几个人的话拼在一起
             if o.subject_person_id and o.subject_person_id != SELF_ID and not o.is_interpretation:
                 by_person.setdefault(o.subject_person_id, []).append(o.content)
         self.reading["queue"] = [(pid, " … ".join(cs)) for pid, cs in by_person.items()]
-        self._load_next_reading()
+        if not by_person:
+            self.reading["why"] = ("这一轮记下的里没有“关于某个人的所见所闻”（你的看法、计划、承诺不做事件解读）。"
+                                   "想让我解读，可以在输入框里用 @ 选一个人再说。")
+        elif not self._load_next_reading():
+            print(f"[reading] 没有解读：{self.reading['why']}", file=__import__("sys").stderr, flush=True)
 
     def _load_next_reading(self) -> bool:
         """取队列里下一个能读出东西的人；都读完（或模型给不出）返回 False。"""
@@ -192,7 +197,10 @@ class App:
         r, w = self.reading, self._world()
         while r.get("queue"):
             pid, text = r["queue"].pop(0)
-            items = K.read_event(self.model, text, person_name=w.persons[pid].display_name)
+            diag: list = []
+            items = K.read_event(self.model, text, person_name=w.persons[pid].display_name, diag=diag)
+            if diag:
+                r["why"] = "；".join(diag)
             if items:
                 r.update(stage="view", items=items, pid=pid, quote=text, picked=None)
                 return True
@@ -214,8 +222,9 @@ class App:
             return [ask("想让我替你留意哪一个现象？", opts, cue="以后遇到时我会提醒你", selected=None, act=n("/reading/signal"))]
         tail = "；".join(f"{v} 条{k}" for k, v in r["counts"].items())
         extra = "。留意的现象已加入待办，下次再说到相关的人或事时会提醒你。" if r.get("watched") else "。"
+        why = f"这次没有给出解读：{r['why']}。" if r.get("why") and not r.get("watched") and r.get("picked") is None else ""
         return [{"kind": "result", "cue": "已归档", "title": f"已记下：{tail}", "big": "", "big_note": "",
-                 "note": "你可以随时用右上角的“记一句”继续记" + extra, "act": n("/reading/done")}]
+                 "note": why + "你可以随时用右上角的“记一句”继续记" + extra, "act": n("/reading/done")}]
 
     def reading_next(self, expect: str, choice: str = "") -> None:
         """expect：这个请求对应的步骤（view / pick / signal）；与当前步骤不一致就拒绝，不跳步。"""

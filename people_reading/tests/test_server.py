@@ -535,7 +535,7 @@ def test_after_confirming_a_record_the_flow_continues_with_a_reading(tmp_path):
         assert req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)[0] == 303
         body = req(s, "GET", "/", headers=ck)[2]
         assert "几种说得通的解释" in body and "她在为某个汇报找素材" in body and "她想试探我手上" in body
-        assert "编造的依据" not in body  # 依据在原话里找不到的解释被丢弃
+        assert "她编造的依据" in body and "原话里根本没有这句" not in body  # 模型改写的依据不采信：用整句原话代替
         assert req(s, "POST", "/reading/pick", "choice=0", headers=ck)[0] == 409  # 不能跳步
         assert req(s, "POST", "/reading/next", headers=ck)[0] == 303
         assert "你觉得哪种更像" in req(s, "GET", "/", headers=ck)[2]
@@ -582,9 +582,13 @@ def test_read_event_validation():
     assert read_event(None, text) is None
     for bad in (ok("她天生就爱试探", "突然跟我要", "x"),            # 性格标签
                 ok("她已经问了 17 次", "突然跟我要", "x"),            # 原话里没有的数字
-                ok("她答应引荐", "突然跟我要", "x"),                  # 越界说法
-                ok("她想要资源", "原话里没有的依据", "x")):           # 依据找不到
-        assert read_event(ScriptedModel([{"explanations": [two[0], bad]}]), text) is None  # 剩一条就不给（不足 2 条）
+                ok("她答应引荐", "突然跟我要", "x")):                  # 越界说法
+        why: list = []
+        assert read_event(ScriptedModel([{"explanations": [two[0], bad]}]), text, diag=why) is None  # 剩一条就不给（不足 2 条）
+        assert why and "不足 2 条" in why[0]  # 并且说明原因
+    paraphrased = [ok("她想要资源", "模型改写过的依据", "之后是否追问"), two[0]]  # 依据找不到：不丢，改用整句原话
+    got = read_event(ScriptedModel([{"explanations": paraphrased}]), text)
+    assert got and got[0]["evidence"] == text
     assert read_event(ScriptedModel([{"explanations": [two[0], dict(two[0])]}]), text) is None  # 重复的解释只算一条
 
 
@@ -833,3 +837,16 @@ def test_open_step_is_a_composer_with_disabled_send_until_text():
     assert "class='composer'" in page and "class='btn p send'" in page and " disabled>" in page
     assert page.index("class='menu who'") < page.index("class='composer'")  # 选择菜单在输入框上方，输入框里有 @ 谁 / # 场合
     assert "data-tok='t1'" in page and "data-stok='s1'" in page and "{actattr" not in page and "class='chip" not in page
+
+
+def test_receipt_says_why_there_is_no_reading(tmp_path):
+    s = _reading_server(tmp_path, ["不是 JSON", "还是不是", "仍然不是"])
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote(READ_TEXT), headers=ck)
+        did = s.app.lock.store.drafts(status="pending")[0]["id"]
+        req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)
+        body = req(s, "GET", "/", headers=ck)[2].split("<script>")[0]
+        assert "这次没有给出解读：" in body and "模型没给出合格的解读" in body  # 不再悄悄跳过
+    finally:
+        s.shutdown(); s.server_close()

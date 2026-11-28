@@ -433,25 +433,34 @@ def validate_read(d) -> list:
             if not (isinstance(x, dict) and _s(x.get("statement")) and _s(x.get("evidence")) and _s(x.get("signal")))]
 
 
-def read_event(model, text: str, *, person_name: str = "") -> Optional[list]:
+def read_event(model, text: str, *, person_name: str = "", diag: Optional[list] = None) -> Optional[list]:
     """返回 [{statement, evidence, signal}]；模型不可用、输出不合格、或可用的少于 2 条时返回 None（不编造）。
-    每条都要过程序校验：依据必须能在原话里逐字找到；不得出现原话里没有的数字；不得用禁用词和越界说法；解释不能重复。"""
+    diag：给了就把“为什么没有解读”的原因追加进去，页面上会告诉你，而不是悄悄跳过。
+    校验：不得出现原话里没有的数字；不得用禁用词、越界说法、性格标签；解释不能重复。
+    依据：模型摘的那段若能在原话里逐字找到就用它；找不到（模型改写了）就用整句原话——依据由程序取自你的原话，不采信模型的转述。"""
+    why = diag if diag is not None else []
     if model is None:
+        why.append("没有可用的模型")
         return None
     try:
         d = model.structured(SYSTEM_READ, f"当事人：{person_name}\n用户原话：{text}", validate_read)
-    except Exception:
+    except Exception as e:
+        why.append(f"模型没给出合格的解读（{type(e).__name__}）")
         return None
-    nums, out, seen = set(NUM.findall(text)), [], set()
+    nums, out, seen, dropped = set(NUM.findall(text)), [], set(), 0
     for x in d["explanations"]:
         s, ev, sg = x["statement"].strip(), x["evidence"].strip(), x["signal"].strip()
         blob = s + sg
-        if find_span(text, ev) is None:
-            continue  # 依据在原话里找不到：丢
         if any(n not in nums for n in NUM.findall(blob)) or not _clean(blob) or any(o in blob for o in OVERCLAIMS):
+            dropped += 1
             continue
         if any(w in blob for w in ("性格", "天生", "就是针对", "一贯如此")) or s in seen:
+            dropped += 1
             continue
         seen.add(s)
-        out.append({"statement": s, "evidence": text[find_span(text, ev)[0]:find_span(text, ev)[1]], "signal": sg})
-    return out if len(out) >= 2 else None
+        span = find_span(text, ev)
+        out.append({"statement": s, "evidence": text[span[0]:span[1]] if span else text, "signal": sg})
+    if len(out) < 2:
+        why.append(f"模型给的解释里可用的不足 2 条（{dropped} 条含原话里没有的数字、性格标签或越界说法）")
+        return None
+    return out
