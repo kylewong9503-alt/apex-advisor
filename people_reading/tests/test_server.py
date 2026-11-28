@@ -1031,9 +1031,61 @@ def test_open_watch_is_checked_when_the_same_person_is_recorded_again(tmp_path):
         body = req(s, "GET", "/", headers=ck)[2]
         assert "有一条待核对的观察" in body and "接下来一周里她是否在会上引用" in body
         assert req(s, "POST", "/reading/watch", "choice=7", headers=ck)[0] == 409
-        assert req(s, "POST", "/reading/watch", "choice=1", headers=ck)[0] == 303
+        c = s.app.reading["checks"][0]
+        k = s.app.tok("watch", c["fid"], c["now"])
+        assert req(s, "POST", "/reading/watch", "choice=1", headers=ck)[0] == 409  # 没带页面上的标识：拒绝
+        assert req(s, "POST", "/reading/watch", f"choice=1&k={k}", headers=ck)[0] == 303
         fu = next(f for f in s.app.w.followups if f.kind == "watch")
         assert fu.status == "not_seen"
         assert next(i for i in s.app.w.interactions.values() if i.get("watch"))["watch"][0]["resolved"]["answer"] == "not_seen"
     finally:
         s.shutdown(); s.server_close()
+
+
+def test_watch_answer_is_bound_to_the_item_shown_and_old_followups_are_checked(tmp_path):
+    from people_reading.world import Followup
+    s = _reading_server(tmp_path, [READ_OUT])
+    try:
+        ck = login(s)  # 两条升级前格式的开放留意项（没有来源元数据）
+        for n in (1, 2):
+            s.app.w.followups.append(Followup(f"F{n}", "watch", "F", "when_relevant", f"现象{n}"))
+        req(s, "POST", "/say", "text=" + quote(READ_TEXT), headers=ck)
+        did = s.app.lock.store.drafts(status="pending")[0]["id"]
+        req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)
+        r = s.app.reading
+        assert r["stage"] == "watch" and [c["fid"] for c in r["checks"]] == ["F1", "F2"]  # 旧格式也进入核对
+        k1 = s.app.tok("watch", "F1", r["checks"][0]["now"])
+        assert req(s, "POST", "/reading/watch", f"choice=0&k={k1}", headers=ck)[0] == 303
+        assert req(s, "POST", "/reading/watch", f"choice=0&k={k1}", headers=ck)[0] == 409  # 重复提交同一题：不会写到第二条
+        st = {f.id: f.status for f in s.app.w.followups if f.kind == "watch"}
+        assert st == {"F1": "seen", "F2": "open"}
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_followup_from_an_event_is_not_verified_by_a_note_on_the_same_event(tmp_path):
+    from people_reading.world import Followup
+    s = _reading_server(tmp_path, [READ_OUT])
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote(READ_TEXT), headers=ck)
+        did = s.app.lock.store.drafts(status="pending")[0]["id"]
+        iid = "INT-main-%s" % s.app.lock.store.drafts(status="pending")[0]["message_id"]
+        s.app.w.interactions[iid] = {"id": iid, "label": "x", "status": "occurred", "day": 1}
+        s.app.w.interactions[iid]["watch"] = [{"fid": "F1", "pid": "F", "signal": "现象", "statement": "解释"}]
+        s.app.w.followups.append(Followup("F1", "watch", "F", "when_relevant", "现象"))
+        req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)  # 观察仍归到同一个互动
+        assert s.app.reading["stage"] == "receipt" and not s.app.reading["checks"]
+        assert next(f for f in s.app.w.followups if f.id == "F1").status == "open"
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_invalid_citation_does_not_claim_the_dedupe_slot():
+    from people_reading.llm import ScriptedModel
+    from people_reading.skillset import read_event
+    text = "老板 F 突然跟我要 A 和 B 的合作"
+    ok = lambda s, e, g: {"statement": s, "evidence": e, "signal": g}  # noqa: E731
+    items = [ok("她在找素材", "模型改写的依据", "之后是否引用"), ok("她在找素材", "突然跟我要", "之后是否引用"), ok("她在试探资源", "A 和 B 的合作", "之后是否追问")]
+    got = read_event(ScriptedModel([{"explanations": items}]), text)
+    assert got and [x["statement"] for x in got] == ["她在找素材", "她在试探资源"]

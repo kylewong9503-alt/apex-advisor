@@ -459,11 +459,11 @@ def read_event(model, text: str, *, person_name: str = "", diag: Optional[list] 
         if any(w in blob for w in ("性格", "天生", "就是针对", "一贯如此")) or s in seen:
             dropped += 1
             continue
-        seen.add(s)
         span = find_span(text, ev)
         if not span:  # 依据在原话里找不到：这条解释没有可核验的来源，剔除（不拿整句原话顶替）
             noev += 1
             continue
+        seen.add(s)  # 依据校验通过之后才登记：无效引用的版本不能占掉同句有效解释
         out.append({"statement": s, "evidence": text[span[0]:span[1]], "signal": sg})
     mf = d.get("missing_fact") if meta is not None else None
     if isinstance(mf, dict) and isinstance(mf.get("question"), str) and isinstance(mf.get("options"), list):

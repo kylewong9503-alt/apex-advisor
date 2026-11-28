@@ -181,19 +181,26 @@ class App:
         self.reading = {"counts": counts, "stage": "receipt", "items": None, "pid": None, "quote": "", "picked": None, "why": ""}
         by_person: dict = {}
         iids: dict = {}
+        allit: dict = {}
         for o in obs:  # 按观察的主体分组：每个人单独读，不把几个人的话拼在一起
             if o.subject_person_id and o.subject_person_id != SELF_ID and not o.is_interpretation:
                 by_person.setdefault(o.subject_person_id, []).append(o.content)
                 iids.setdefault(o.subject_person_id, o.interaction_id)
+                allit.setdefault(o.subject_person_id, []).append(o.interaction_id)
         self.reading["queue"] = [(pid, " … ".join(cs), iids[pid]) for pid, cs in by_person.items()]
         self.reading["people"] = list(by_person)  # 回执里“打开档案”用；不依赖模型是否成功
         w0, chk = self._world(), []  # 这些人以前留下的、还没核对的“留意项”：这次新记录是核对的机会
-        for iid0, meta in w0.interactions.items():
-            for wt in meta.get("watch", []):
-                fu = next((f for f in w0.followups if f.id == wt["fid"]), None)
-                if wt["pid"] in by_person and fu is not None and fu.status == "open":
-                    chk.append({"fid": wt["fid"], "pid": wt["pid"], "signal": wt["signal"], "statement": wt["statement"], "src": iid0,
-                                "now": iids[wt["pid"]]})
+        known = {wt["fid"] for m in w0.interactions.values() for wt in m.get("watch", [])}
+        cand = [(iid0, wt) for iid0, m in w0.interactions.items() for wt in m.get("watch", [])]
+        cand += [("", {"fid": f.id, "pid": f.target_ref, "signal": f.text, "statement": ""})  # 升级前留下的：没有来源元数据，也照常核对
+                 for f in w0.followups if f.kind == "watch" and f.trigger == "when_relevant" and f.id not in known]
+        for iid0, wt in cand:
+            fu = next((f for f in w0.followups if f.id == wt["fid"]), None)
+            if wt["pid"] not in by_person or fu is None or fu.status != "open":
+                continue
+            fresh = [i for i in allit[wt["pid"]] if i != iid0]  # 必须来自另一件事：补记原事件的内容不能验证原事件
+            if fresh:
+                chk.append({"fid": wt["fid"], "pid": wt["pid"], "signal": wt["signal"], "statement": wt["statement"], "src": iid0, "now": fresh[0]})
         self.reading["checks"] = chk
         if chk:
             self.reading["stage"] = "watch"
@@ -215,15 +222,18 @@ class App:
             r["stage"] = "receipt"
             r["tried"] = True
 
-    def reading_watch(self, choice: str) -> None:
+    def reading_watch(self, choice: str, k: str = "") -> None:
         r = self.reading
         if r is None or r["stage"] != "watch" or not r["checks"] or choice not in ("0", "1", "2"):
+            raise KeyError("watch")
+        c0 = r["checks"][0]
+        if not hmac.compare_digest(self.tok("watch", c0["fid"], c0["now"]), k):  # 答案只对页面上展示的那一条有效；重复或过期的提交拒绝
             raise KeyError("watch")
         c, w = r["checks"].pop(0), self._world()
         if choice != "2":
             fu = next(f for f in w.followups if f.id == c["fid"])
             fu.status = "seen" if choice == "0" else "not_seen"
-            for wt in w.interactions[c["src"]].get("watch", []):
+            for wt in w.interactions.get(c["src"], {}).get("watch", []):
                 if wt["fid"] == c["fid"]:
                     wt["resolved"] = {"answer": fu.status, "by_interaction": c["now"]}  # 留下是哪次记录核对的
             self.lock.store.sync_world(w)
@@ -277,8 +287,8 @@ class App:
         tail = "；".join(f"{v} 条{k}" for k, v in r["counts"].items())
         if r["stage"] == "watch":
             c = r["checks"][0]
-            return [ask(f"上次说要留意：{c['signal']}。这次的记录里出现了吗？", [("出现了", "", "对应的解释：" + c["statement"]), ("没出现", "", ""), ("还不确定", "", "继续留着")],
-                        cue="有一条待核对的观察", selected=None, act=n("/reading/watch"))]
+            return [ask(f"上次说要留意：{c['signal']}。这次的记录里出现了吗？", [("出现了", "", ("对应的解释：" + c["statement"]) if c["statement"] else ""), ("没出现", "", ""), ("还不确定", "", "继续留着")],
+                        cue="有一条待核对的观察", selected=None, act={"url": "/reading/watch", "fields": {"k": self.tok("watch", c["fid"], c["now"])}})]
         if r["stage"] == "who":
             w = self._world()
             return [ask("先看谁的？", [(w.persons[pid].display_name, "", "") for pid, *_ in r["queue"]], cue="几个人都有新记录", selected=None,
@@ -1024,7 +1034,7 @@ def make_handler(app: App):
                     elif path == "/reading/start":
                         app.reading_start()
                     elif path == "/reading/watch":
-                        app.reading_watch((form.get("choice") or [""])[0])
+                        app.reading_watch((form.get("choice") or [""])[0], (form.get("k") or [""])[0])
                     elif path == "/reading/who":
                         app.reading_who((form.get("choice") or [""])[0])
                     elif path == "/reading/done":
