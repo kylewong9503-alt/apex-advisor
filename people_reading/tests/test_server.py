@@ -539,7 +539,7 @@ def test_after_confirming_a_record_the_flow_continues_with_a_reading(tmp_path):
         assert req(s, "POST", "/reading/start", headers=ck)[0] == 303
         body = req(s, "GET", "/", headers=ck)[2]
         assert "几种说得通的解释" in body and "她在为某个汇报找素材" in body and "她想试探我手上" in body
-        assert "她编造的依据" in body and "原话里根本没有这句" not in body  # 模型改写的依据不采信：用整句原话代替
+        assert "她编造的依据" not in body and "原话里根本没有这句" not in body  # 依据在原话里找不到的解释直接剔除，不拿整句顶替
         assert req(s, "POST", "/reading/pick", "choice=0", headers=ck)[0] == 409  # 不能跳步
         assert req(s, "POST", "/reading/next", headers=ck)[0] == 303
         assert "你觉得哪种更像" in req(s, "GET", "/", headers=ck)[2]
@@ -590,9 +590,12 @@ def test_read_event_validation():
         why: list = []
         assert read_event(ScriptedModel([{"explanations": [two[0], bad]}]), text, diag=why) is None  # 剩一条就不给（不足 2 条）
         assert why and "不足 2 条" in why[0]  # 并且说明原因
-    paraphrased = [ok("她想要资源", "模型改写过的依据", "之后是否追问"), two[0]]  # 依据找不到：不丢，改用整句原话
-    got = read_event(ScriptedModel([{"explanations": paraphrased}]), text)
-    assert got and got[0]["evidence"] == text
+    paraphrased = [ok("她想要资源", "模型改写过的依据", "之后是否追问"), two[0]]  # 依据找不到：这条剔除，剩一条就不给
+    why = []
+    assert read_event(ScriptedModel([{"explanations": paraphrased}]), text, diag=why) is None and "依据在原话里找不到" in why[0]
+    three = paraphrased + [two[1]]
+    got = read_event(ScriptedModel([{"explanations": three}]), text)
+    assert got and [x["statement"] for x in got] == ["她在找素材", "她在试探资源"] and all(x["evidence"] in text for x in got)
     assert read_event(ScriptedModel([{"explanations": [two[0], dict(two[0])]}]), text) is None  # 重复的解释只算一条
 
 
@@ -885,7 +888,9 @@ def test_people_list_profile_and_preselected_say(tmp_path):
 
 def test_missing_fact_is_asked_before_explanations_and_stored_on_the_interaction(tmp_path):
     out = dict(READ_OUT, missing_fact={"question": "她是当面说的还是发消息？", "options": ["当面", "消息"]})
-    s = _reading_server(tmp_path, [out])
+    again = {"explanations": [{"statement": "她在书面留痕", "evidence": "突然跟我要", "signal": "之后是否再发消息"},
+                               {"statement": "她想先试探", "evidence": "要 A 和 B 的合作", "signal": "之后是否追问"}]}
+    s = _reading_server(tmp_path, [out, again])
     try:
         ck = login(s)
         req(s, "POST", "/say", "text=" + quote(READ_TEXT), headers=ck)
@@ -900,7 +905,9 @@ def test_missing_fact_is_asked_before_explanations_and_stored_on_the_interaction
         facts = [f for i in s.app.w.interactions.values() for f in i.get("facts", [])]
         assert facts == [{"q": "她是当面说的还是发消息？", "a": "消息", "by": "user"}]
         assert not any("消息" in o.content for o in s.app.w.observations.values())  # 补的事实不是观察
-        assert "几种说得通的解释" in req(s, "GET", "/", headers=ck)[2]
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "几种说得通的解释" in body and "她在书面留痕" in body and "她在为某个汇报找素材" not in body  # 带着答案重新生成
+        assert "消息" in s.app.model.prompts[2] and "不是原话" in s.app.model.prompts[2]
         pr = req(s, "GET", "/person/" + req(s, "GET", "/people", headers=ck)[2].split("/person/")[1].split("'")[0], headers=ck)[2]
         assert "补充事实：她是当面说的还是发消息？ → 消息" in pr
     finally:
@@ -939,5 +946,94 @@ def test_profile_hints_open_watch_and_shows_other_people_in_the_same_event(tmp_p
         o.involved = ["G2"]
         pr = req(s, "GET", "/person/" + tok, headers=ck)[2]
         assert "同一件事还涉及：F、G2" in pr  # 页面按“代号”显示（遮挡时是●序号）
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def _two_people_server(tmp_path, outs):
+    from people_reading.llm import ScriptedModel
+    from people_reading.tests import test_step4 as T4
+    from people_reading.tests.test_step2 import extraction
+    dF = dict(READ_DRAFT)
+    dM = dict(READ_DRAFT, subject="M", content="M 拒绝了预算", source_quote="M 拒绝了预算")
+    w, st, it = T4.env(tmp_path, [])
+    path = st.path; st.close()
+    s = serve(path, "127.0.0.1", 0, model=ScriptedModel([extraction(drafts=[dF, dM])] + outs))
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    return s
+
+
+def test_second_person_also_gets_the_missing_fact_question(tmp_path):
+    ex = lambda a, b: [{"statement": a, "evidence": "突然跟我要", "signal": "之后是否再发"}, {"statement": b, "evidence": "突然跟我要", "signal": "之后是否追问"}]  # noqa: E731
+    mf = {"question": "是当面吗？", "options": ["是", "否"]}
+    rF = {"explanations": ex("F 在留痕", "F 在催促")}
+    rM = {"explanations": [{"statement": "M 预算紧", "evidence": "M 拒绝了预算", "signal": "他是否批其他项目"},
+                           {"statement": "M 在拖延", "evidence": "M 拒绝了预算", "signal": "他是否给出时间"}], "missing_fact": mf}
+    s = _two_people_server(tmp_path, [rF, rM])
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote("F 突然跟我要 A 和 B 的合作。M 拒绝了预算。"), headers=ck)
+        pend = s.app.lock.store.drafts(status="pending")
+        msg = pend[0]["message_id"]
+        req(s, "POST", "/confirm_many", f"msg={msg}&ids={','.join(d['id'] for d in pend)}", headers=ck)
+        req(s, "POST", "/reading/start", headers=ck); req(s, "POST", "/reading/who", "choice=0", headers=ck)
+        req(s, "POST", "/reading/next", headers=ck); req(s, "POST", "/reading/pick", "choice=0", headers=ck)
+        req(s, "POST", "/reading/signal", "choice=0", headers=ck)
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "是当面吗" in body and "几种说得通的解释" not in body  # 第二个人先补事实，不直接看到解释
+        assert s.app.reading["stage"] == "fact"
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_profile_start_note_keeps_a_person_beyond_the_first_twelve(tmp_path):
+    from people_reading.tests import test_step4 as T4
+    from people_reading.world import Person
+    w, st, it = T4.env(tmp_path, [])
+    for i in range(14):
+        w.persons[f"Z{i}"] = Person(f"Z{i}", f"人{i}", code=f"Z{i}")
+    st.sync_world(w)
+    path = st.path; st.close()
+    s = serve(path, "127.0.0.1", 0)
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    try:
+        ck = login(s)
+        rd = __import__("people_reading.privacy", fromlist=["Redactor"]).Redactor(s.app.w, "code")
+        chips = {t for t, _ in s.app.people_chips(rd)}
+        extra = next(p.id for p in s.app.w.persons.values() if p.id.startswith("Z") and s.app.tok("who", p.id) not in chips)
+        tok = s.app.tok("who", extra)
+        assert f"data-pre='{tok}'" in req(s, "GET", "/say?who=" + tok, headers=ck)[2]
+    finally:
+        s.shutdown(); s.server_close()
+
+
+def test_open_watch_is_checked_when_the_same_person_is_recorded_again(tmp_path):
+    s = _reading_server(tmp_path, [READ_OUT])
+    try:
+        ck = login(s)
+        req(s, "POST", "/say", "text=" + quote(READ_TEXT), headers=ck)
+        did = s.app.lock.store.drafts(status="pending")[0]["id"]
+        req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)
+        for u, c in (("/reading/start", ""), ("/reading/next", ""), ("/reading/pick", "choice=0"), ("/reading/signal", "choice=0")):
+            req(s, "POST", u, c, headers=ck)
+        req(s, "POST", "/reading/done", headers=ck)
+        src = next(i for i in s.app.w.interactions.values() if i.get("watch"))
+        assert src["watch"][0]["statement"] and src["watch"][0]["signal"] and src["watch"][0]["fid"]  # 来源、解释、现象都留着
+        # 重新上锁再打开：留意项与来源仍在
+        s.app.lock.lock(); s.app.on_lock()
+        ck = login(s)
+        assert any(i.get("watch") for i in s.app.w.interactions.values())
+        from people_reading.tests.test_step2 import extraction
+        s.app.model.outputs.append(extraction(drafts=[dict(READ_DRAFT, content="F 又发了一次", source_quote="F 又发了")]))
+        req(s, "POST", "/say", "text=" + quote("F 又发了一次邀请"), headers=ck)
+        did = s.app.lock.store.drafts(status="pending")[0]["id"]
+        req(s, "POST", "/confirm", f"id={did}&choice=0", headers=ck)
+        body = req(s, "GET", "/", headers=ck)[2]
+        assert "有一条待核对的观察" in body and "接下来一周里她是否在会上引用" in body
+        assert req(s, "POST", "/reading/watch", "choice=7", headers=ck)[0] == 409
+        assert req(s, "POST", "/reading/watch", "choice=1", headers=ck)[0] == 303
+        fu = next(f for f in s.app.w.followups if f.kind == "watch")
+        assert fu.status == "not_seen"
+        assert next(i for i in s.app.w.interactions.values() if i.get("watch"))["watch"][0]["resolved"]["answer"] == "not_seen"
     finally:
         s.shutdown(); s.server_close()

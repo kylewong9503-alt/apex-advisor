@@ -187,6 +187,16 @@ class App:
                 iids.setdefault(o.subject_person_id, o.interaction_id)
         self.reading["queue"] = [(pid, " … ".join(cs), iids[pid]) for pid, cs in by_person.items()]
         self.reading["people"] = list(by_person)  # 回执里“打开档案”用；不依赖模型是否成功
+        w0, chk = self._world(), []  # 这些人以前留下的、还没核对的“留意项”：这次新记录是核对的机会
+        for iid0, meta in w0.interactions.items():
+            for wt in meta.get("watch", []):
+                fu = next((f for f in w0.followups if f.id == wt["fid"]), None)
+                if wt["pid"] in by_person and fu is not None and fu.status == "open":
+                    chk.append({"fid": wt["fid"], "pid": wt["pid"], "signal": wt["signal"], "statement": wt["statement"], "src": iid0,
+                                "now": iids[wt["pid"]]})
+        self.reading["checks"] = chk
+        if chk:
+            self.reading["stage"] = "watch"
         if not by_person:
             self.reading["why"] = ("这一轮记下的里没有“关于某个人的所见所闻”（你的看法、计划、承诺不做事件解读）。"
                                    "想让我解读，可以在输入框里用 @ 选一个人再说。")
@@ -204,6 +214,21 @@ class App:
             print(f"[reading] 没有解读：{r['why']}", file=__import__("sys").stderr, flush=True)
             r["stage"] = "receipt"
             r["tried"] = True
+
+    def reading_watch(self, choice: str) -> None:
+        r = self.reading
+        if r is None or r["stage"] != "watch" or not r["checks"] or choice not in ("0", "1", "2"):
+            raise KeyError("watch")
+        c, w = r["checks"].pop(0), self._world()
+        if choice != "2":
+            fu = next(f for f in w.followups if f.id == c["fid"])
+            fu.status = "seen" if choice == "0" else "not_seen"
+            for wt in w.interactions[c["src"]].get("watch", []):
+                if wt["fid"] == c["fid"]:
+                    wt["resolved"] = {"answer": fu.status, "by_interaction": c["now"]}  # 留下是哪次记录核对的
+            self.lock.store.sync_world(w)
+        if not r["checks"]:
+            r["stage"] = "receipt"
 
     def reading_who(self, choice: str) -> None:
         r = self.reading
@@ -250,6 +275,10 @@ class App:
             opts = [(x["signal"], "", "不用问对方，零代价") for x in r["items"]] + [("先放着", "", "")]
             return [ask("想让我替你留意哪一个现象？", opts, cue="以后遇到时我会提醒你", selected=None, act=n("/reading/signal"))]
         tail = "；".join(f"{v} 条{k}" for k, v in r["counts"].items())
+        if r["stage"] == "watch":
+            c = r["checks"][0]
+            return [ask(f"上次说要留意：{c['signal']}。这次的记录里出现了吗？", [("出现了", "", "对应的解释：" + c["statement"]), ("没出现", "", ""), ("还不确定", "", "继续留着")],
+                        cue="有一条待核对的观察", selected=None, act=n("/reading/watch"))]
         if r["stage"] == "who":
             w = self._world()
             return [ask("先看谁的？", [(w.persons[pid].display_name, "", "") for pid, *_ in r["queue"]], cue="几个人都有新记录", selected=None,
@@ -280,6 +309,17 @@ class App:
             if i < len(f["options"]) and r.get("iid") in w.interactions:  # 答案存在这次互动上，不进观察、不进比较
                 w.interactions[r["iid"]].setdefault("facts", []).append({"q": f["question"], "a": f["options"][i], "by": "user"})
                 self.lock.store.sync_world(w)
+            if i < len(f["options"]):  # 答案成了新的信息：带着它重新生成并重新筛选解读（不再追问）
+                from . import skillset as K
+                diag: list = []
+                items = K.read_event(self.model, r["quote"], person_name=w.persons[r["pid"]].display_name, diag=diag,
+                                     extra=f"{f['question']} → {f['options'][i]}")
+                if items:
+                    r["items"], r["stage"] = items, "view"
+                else:
+                    r["why"] = "；".join(diag) or "补充事实后没有可用的解释"
+                    self._advance()
+                return
             r["stage"] = "view"
         elif st == "view":
             r["stage"] = "pick"
@@ -302,12 +342,21 @@ class App:
             i, w = int(choice), self._world()
             if i < len(r["items"]):
                 from .world import Followup
-                w.followups.append(Followup(f"F{len(w.followups) + 1}", "watch", r["pid"], "when_relevant", r["items"][i]["signal"]))
+                fid = f"F{len(w.followups) + 1}"
+                w.followups.append(Followup(fid, "watch", r["pid"], "when_relevant", r["items"][i]["signal"]))
+                if r.get("iid") in w.interactions:  # 来源：哪件事、哪种解释、要看的现象；以后同一个人的新记录回到这里确认
+                    w.interactions[r["iid"]].setdefault("watch", []).append(
+                        {"fid": fid, "statement": r["items"][i]["statement"], "signal": r["items"][i]["signal"], "pid": r["pid"]})
                 r["watched"] = True
                 self.lock.store.sync_world(w)
-            r["stage"] = "view" if self._load_next_reading() else "done"
+            self._advance()
         else:
             raise KeyError("done")
+
+    def _advance(self) -> None:
+        """这个人走完了：读下一位（可能先是他的补事实题）；没有了就收尾。"""
+        if not self._load_next_reading():
+            self.reading["stage"] = "done"
 
     def reading_done(self) -> None:
         if self.reading is None or self.reading["stage"] not in ("receipt", "done"):
@@ -443,8 +492,14 @@ class App:
         """随时记一句：不论现在在哪个流程里。who：从某人的档案页进来时预选的人（令牌，对不上就当没选）。"""
         rd = Redactor(self._world(), "masked" if self.masked else "code")
         step = self._say_step("想记一件什么事？", "直接说；用 @ 选谁、# 选场合", rd)
-        if who and who not in {t for t, _ in step["people"]}:
-            who = ""
+        if who and who not in {t for t, _ in step["people"]}:  # 档案里的人不一定在常用的前 12 个：只要令牌对得上就显式加进选项
+            w = self._world()
+            p = next((p for p in w.persons.values() if not p.is_self and not p.is_placeholder and not p.merged_into_id
+                      and hmac.compare_digest(self.tok("who", p.id), who)), None)
+            if p is None:
+                who = ""
+            else:
+                step["people"] = list(step["people"]) + [(who, rd.p(p.id))]
         return render_flow([step], rd=rd, library_href="/library", head_extra=HEAD_EXTRA, banner=self.banner(), people_href="/people",
                            pre_who=who, draft_key="" if self.masked else "kg.draft")
 
@@ -968,6 +1023,8 @@ def make_handler(app: App):
                                          (form.get("choice") or [""])[0])
                     elif path == "/reading/start":
                         app.reading_start()
+                    elif path == "/reading/watch":
+                        app.reading_watch((form.get("choice") or [""])[0])
                     elif path == "/reading/who":
                         app.reading_who((form.get("choice") or [""])[0])
                     elif path == "/reading/done":

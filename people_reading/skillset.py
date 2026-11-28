@@ -434,7 +434,8 @@ def validate_read(d) -> list:
             if not (isinstance(x, dict) and _s(x.get("statement")) and _s(x.get("evidence")) and _s(x.get("signal")))]
 
 
-def read_event(model, text: str, *, person_name: str = "", diag: Optional[list] = None, meta: Optional[dict] = None) -> Optional[list]:
+def read_event(model, text: str, *, person_name: str = "", diag: Optional[list] = None, meta: Optional[dict] = None,
+               extra: str = "") -> Optional[list]:
     """返回 [{statement, evidence, signal}]；模型不可用、输出不合格、或可用的少于 2 条时返回 None（不编造）。
     diag：给了就把“为什么没有解读”的原因追加进去，页面上会告诉你，而不是悄悄跳过。
     校验：不得出现原话里没有的数字；不得用禁用词、越界说法、性格标签；解释不能重复。
@@ -444,11 +445,11 @@ def read_event(model, text: str, *, person_name: str = "", diag: Optional[list] 
         why.append("没有可用的模型")
         return None
     try:
-        d = model.structured(SYSTEM_READ, f"当事人：{person_name}\n用户原话：{text}", validate_read)
+        d = model.structured(SYSTEM_READ, f"当事人：{person_name}\n用户原话：{text}" + (f"\n用户补充的事实（用户回答，不是原话）：{extra}" if extra else ""), validate_read)
     except Exception as e:
         why.append(f"模型没给出合格的解读（{type(e).__name__}）")
         return None
-    nums, out, seen, dropped = set(NUM.findall(text)), [], set(), 0
+    nums, out, seen, dropped, noev = set(NUM.findall(text + extra)), [], set(), 0, 0
     for x in d["explanations"]:
         s, ev, sg = x["statement"].strip(), x["evidence"].strip(), x["signal"].strip()
         blob = s + sg
@@ -460,7 +461,10 @@ def read_event(model, text: str, *, person_name: str = "", diag: Optional[list] 
             continue
         seen.add(s)
         span = find_span(text, ev)
-        out.append({"statement": s, "evidence": text[span[0]:span[1]] if span else text, "signal": sg})
+        if not span:  # 依据在原话里找不到：这条解释没有可核验的来源，剔除（不拿整句原话顶替）
+            noev += 1
+            continue
+        out.append({"statement": s, "evidence": text[span[0]:span[1]], "signal": sg})
     mf = d.get("missing_fact") if meta is not None else None
     if isinstance(mf, dict) and isinstance(mf.get("question"), str) and isinstance(mf.get("options"), list):
         q, ops = mf["question"].strip(), [o.strip() for o in mf["options"] if isinstance(o, str) and o.strip()]
@@ -469,6 +473,6 @@ def read_event(model, text: str, *, person_name: str = "", diag: Optional[list] 
         if ok:
             meta["missing_fact"] = {"question": q, "options": ops}
     if len(out) < 2:
-        why.append(f"模型给的解释里可用的不足 2 条（{dropped} 条含原话里没有的数字、性格标签或越界说法）")
+        why.append(f"模型给的解释里可用的不足 2 条（{dropped} 条含原话里没有的数字、性格标签或越界说法；{noev} 条的依据在原话里找不到）")
         return None
     return out
